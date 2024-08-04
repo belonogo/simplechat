@@ -1,5 +1,9 @@
-QT += widgets network
+QT += core gui widgets network
 CONFIG += c++17
+
+TEMPLATE = app
+
+TARGET = client
 
 OBJECTS_DIR = $$PWD/obj
 MOC_DIR = $$PWD/moc
