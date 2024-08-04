@@ -1,7 +1,11 @@
 QT += core network
 QT -= gui
 
-CONFIG += c++17
+CONFIG += c++17 console
+
+TEMPLATE = app
+
+TARGET = server
 
 OBJECTS_DIR = $$PWD/obj
 MOC_DIR = $$PWD/moc
