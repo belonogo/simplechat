@@ -11,6 +11,7 @@ bool Server::startServer()
 
 void Server::incomingConnection(qintptr socketDescriptor)
 {
+    //test commit
     QTcpSocket *clientSocket = new QTcpSocket(this);
     if (clientSocket->setSocketDescriptor(socketDescriptor)) {
         connect(clientSocket, &QTcpSocket::readyRead, this, &Server::onReadyRead);
