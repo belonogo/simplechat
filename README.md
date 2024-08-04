@@ -17,31 +17,6 @@ SimpleChat — это простое чат-приложение, разрабо
 - [Qt 5.15 или выше](https://www.qt.io/download)
 - [CMake](https://cmake.org/download/)
 
-### Установка
-
-1. Клонируйте репозиторий:
-    ```sh
-    git clone https://github.com/belonogo/simplechat.git
-    ```
-2. Перейдите в директорию проекта:
-    ```sh
-    cd simplechat
-    ```
-3. Соберите проект с помощью CMake:
-    ```sh
-    mkdir build
-    cd build
-    cmake ..
-    make
-    ```
-
-### Запуск приложения
-
-После сборки проекта, вы можете запустить приложение с помощью команды:
-```sh
-./simplechat
-```
-
 ## Использование
 
 1. Запустите приложение.
