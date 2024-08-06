@@ -18,7 +18,7 @@ MainWindow::MainWindow(QWidget *parent)
     connect(socket, &QTcpSocket::readyRead, this, &MainWindow::onReadyRead);
 
     // Подключаемся к серверу
-    socket->connectToHost("127.0.0.1", 1234); // Замените IP на адрес вашего сервера
+    socket->connectToHost("192.168.120.179", 1234); // Замените IP на адрес вашего сервера
 
     loadUserList();
 }
@@ -60,12 +60,15 @@ void MainWindow::onReadyRead()
 {
     QString response = QString::fromUtf8(socket->readAll()).trimmed();
     QStringList lines = response.split("\n");
+
+    ui->userListWidget->clear();
+
     for (const QString &line : lines) {
         if (line.startsWith("OK Logged in successfully")) {
             loadUserList();
-        } else if (line.startsWith("ERROR") || line.startsWith("OK")) {
+        } else if (line.startsWith("ERROR")) {
             ui->statusLabel->setText(line);
-        } else {
+        } else if (!line.isEmpty()) {
             ui->userListWidget->addItem(line);
         }
     }
