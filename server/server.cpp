@@ -11,7 +11,6 @@ bool Server::startServer()
 
 void Server::incomingConnection(qintptr socketDescriptor)
 {
-    //test commit
     QTcpSocket *clientSocket = new QTcpSocket(this);
     if (clientSocket->setSocketDescriptor(socketDescriptor)) {
         connect(clientSocket, &QTcpSocket::readyRead, this, &Server::onReadyRead);
@@ -40,6 +39,8 @@ void Server::onClientDisconnected()
         QString username = userMap.value(client, "Unknown");
         clients.remove(client);
         userMap.remove(client);
+        activeSessions.remove(username);
+        updateClientList();
         client->deleteLater();
         logAction(username + " disconnected");
     }
@@ -109,10 +110,18 @@ void Server::loginUser(QTcpSocket *client, const QString &username, const QStrin
         return;
     }
 
+    if (activeSessions.contains(username)) {
+        client->write("ERROR User already logged in\n");
+        logAction("Failed login attempt for already logged in user " + username);
+        return;
+    }
+
     QString storedPassword = getPasswordForUser(username);
     if (storedPassword == password) {
         client->write("OK Logged in successfully\n");
         userMap[client] = username;
+        activeSessions.insert(username);
+        updateClientList();
         logAction("User logged in successfully: " + username);
     } else {
         client->write("ERROR Invalid password\n");
@@ -163,6 +172,14 @@ QString Server::getUserList() const
         userList << userMap.value(client, "Unknown");
     }
     return userList.join("\n");
+}
+
+void Server::updateClientList()
+{
+    QString userList = getUserList();
+    for (QTcpSocket *client : clients) {
+        client->write((userList + "\n").toUtf8());
+    }
 }
 
 void Server::broadcastMessage(const QString &sender, const QString &message)
