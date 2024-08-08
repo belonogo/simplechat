@@ -1,57 +1,38 @@
-void MainWindow::readSocket()
+#include <QCoreApplication>
+#include <QString>
+#include <QVector>
+#include <QRandomGenerator>
+#include <iostream>
+
+QString generateFunnyNickname() {
+    QVector<QString> adjectives = {
+        "Вонючий", "Смешной", "Злобный", "Веселый", "Медленный", "Сонный", "Быстрый", "Ленивый", "Громкий", "Тихий",
+        "Прыгающий", "Пугающий", "Танцующий", "Кричащий", "Шумный", "Загадочный", "Хитрый", "Добрый", "Угрюмый", "Маленький",
+        "Большой", "Мохнатый", "Гладкий", "Зеленый", "Синий", "Красный", "Желтый", "Розовый", "Фиолетовый", "Рыжий",
+        "Страшный", "Забавный", "Сердитый", "Спящий", "Бодрый", "Уставший", "Потный", "Мокрый", "Сухой", "Пушистый",
+        "Колючий", "Грязный", "Чистый", "Скользкий", "Шершавый", "Прекрасный", "Ужасный", "Умный", "Глупый", "Малодушный"
+    };
+
+    QVector<QString> nouns = {
+        "Горилла", "Кот", "Медведь", "Лев", "Панда", "Крокодил", "Енот", "Тигр", "Бегемот", "Жираф",
+        "Слон", "Крыса", "Мышь", "Лиса", "Волк", "Заяц", "Кенгуру", "Коала", "Лама", "Барсук",
+        "Белка", "Кабан", "Петух", "Курица", "Гусь", "Утка", "Орел", "Сокол", "Сова", "Дятел",
+        "Свинья", "Овца", "Коза", "Лошадь", "Корова", "Буйвол", "Осел", "Верблюд", "Муравей", "Пчела",
+        "Жук", "Бабочка", "Стрекоза", "Паук", "Черепаха", "Ящерица", "Крокодил", "Акула", "Дельфин", "Кит"
+    };
+
+    QString adjective = adjectives.at(QRandomGenerator::global()->bounded(adjectives.size()));
+    QString noun = nouns.at(QRandomGenerator::global()->bounded(nouns.size()));
+
+    return adjective + " " + noun;
+}
+
+int main(int argc, char *argv[])
 {
-    static QByteArray buffer;
-    QDataStream socketStream(socket);
-    socketStream.setVersion(QDataStream::Qt_5_15);
+    QCoreApplication a(argc, argv);
 
-    while (socket->bytesAvailable()) {
-        socketStream.startTransaction();
-        QByteArray chunk;
-        socketStream >> chunk;
+    QString nickname = generateFunnyNickname();
+    std::cout << "Generated nickname: " << nickname.toStdString() << std::endl;
 
-        if (!socketStream.commitTransaction()) {
-            QString message = QString("%1 :: Waiting for more data to come..").arg(socket->socketDescriptor());
-            emit newMessage(message);
-            return;
-        }
-
-        buffer.append(chunk);
-
-        // Пример предполагает, что каждый пакет данных включает длину заголовка (128 байт)
-        if (buffer.size() < 128) {
-            continue;
-        }
-
-        QString header = buffer.mid(0, 128);
-        QString fileType = header.split(",")[0].split(":")[1];
-        buffer = buffer.mid(128); // Убираем заголовок из буфера
-
-        if (fileType == "attachment") {
-            QString fileName = header.split(",")[1].split(":")[1];
-            QString ext = fileName.split(".")[1];
-            QString size = header.split(",")[2].split(":")[1].split(";")[0];
-
-            if (QMessageBox::Yes == QMessageBox::question(this, "QTCPServer", QString("You are receiving an attachment from sd:%1 of size: %2 bytes, called %3. Do you want to accept it?").arg(socket->socketDescriptor()).arg(size).arg(fileName)))
-            {
-                QString filePath = QFileDialog::getSaveFileName(this, tr("Save File"), QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation)+"/"+fileName, QString("File (*.%1)").arg(ext));
-
-                QFile file(filePath);
-                if (file.open(QIODevice::WriteOnly)) {
-                    file.write(buffer);
-                    QString message = QString("INFO :: Attachment from sd:%1 successfully stored on disk under the path %2").arg(socket->socketDescriptor()).arg(QString(filePath));
-                    emit newMessage(message);
-                } else {
-                    QMessageBox::critical(this, "QTCPServer", "An error occurred while trying to write the attachment.");
-                }
-            } else {
-                QString message = QString("INFO :: Attachment from sd:%1 discarded").arg(socket->socketDescriptor());
-                emit newMessage(message);
-            }
-        } else if (fileType == "message") {
-            QString message = QString("%1 :: %2").arg(socket->socketDescriptor()).arg(QString::fromStdString(buffer.toStdString()));
-            emit newMessage(message);
-        }
-
-        buffer.clear(); // Очистить буфер после обработки пакета
-    }
+    return a.exec();
 }
