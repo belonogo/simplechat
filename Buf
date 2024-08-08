@@ -21,6 +21,18 @@ QString generateFunnyNickname() {
         "Жук", "Бабочка", "Стрекоза", "Паук", "Черепаха", "Ящерица", "Крокодил", "Акула", "Дельфин", "Кит"
     };
 
+QVector<QString> moods = {
+        "😀", "😁", "😂", "🤣", "😃", "😄", "😅", "😆", "😉", "😊",
+        "😋", "😎", "😍", "😘", "😗", "😙", "😚", "☺️", "🙂", "🤗",
+        "🤩", "🤔", "🤨", "😐", "😑", "😶", "🙄", "😏", "😣", "😥",
+        "😮", "🤐", "😯", "😪", "😫", "🥱", "😴", "😌", "😛", "😜",
+        "😝", "🤤", "😒", "😓", "😔", "😕", "🙃", "🤑", "😲", "☹️"
+    };
+
+    QString adjective = adjectives.at(QRandomGenerator::global()->bounded(adjectives.size()));
+    QString noun = nouns.at(QRandomGenerator::global()->bounded(nouns.size()));
+    QString mood = moods.at(QRandomGenerator::global()->bounded(moods.size()));
+
     QString adjective = adjectives.at(QRandomGenerator::global()->bounded(adjectives.size()));
     QString noun = nouns.at(QRandomGenerator::global()->bounded(nouns.size()));
 
