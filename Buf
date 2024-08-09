@@ -1,50 +1,78 @@
-#include <QCoreApplication>
+#include "encryption.h"
+#include <openssl/rsa.h>
+#include <openssl/pem.h>
+#include <openssl/err.h>
+#include <QDebug>
+
+QByteArray Encryption::encryptData(const QByteArray &data, const QString &publicKey) {
+    QByteArray encryptedData;
+
+    BIO *keybio = BIO_new_mem_buf((void*)publicKey.toUtf8().data(), -1);
+    RSA *rsa = PEM_read_bio_RSA_PUBKEY(keybio, nullptr, nullptr, nullptr);
+
+    if (rsa == nullptr) {
+        qDebug() << "Failed to create RSA structure";
+        return encryptedData;
+    }
+
+    int rsaSize = RSA_size(rsa);
+    encryptedData.resize(rsaSize);
+
+    int result = RSA_public_encrypt(data.size(), (const unsigned char*)data.data(),
+                                    (unsigned char*)encryptedData.data(), rsa, RSA_PKCS1_PADDING);
+
+    if (result == -1) {
+        qDebug() << "Encryption failed";
+        encryptedData.clear();
+    }
+
+    RSA_free(rsa);
+    BIO_free_all(keybio);
+
+    return encryptedData;
+}
+
+QByteArray Encryption::decryptData(const QByteArray &encryptedData, const QString &privateKey) {
+    QByteArray decryptedData;
+
+    BIO *keybio = BIO_new_mem_buf((void*)privateKey.toUtf8().data(), -1);
+    RSA *rsa = PEM_read_bio_RSAPrivateKey(keybio, nullptr, nullptr, nullptr);
+
+    if (rsa == nullptr) {
+        qDebug() << "Failed to create RSA structure";
+        return decryptedData;
+    }
+
+    int rsaSize = RSA_size(rsa);
+    decryptedData.resize(rsaSize);
+
+    int result = RSA_private_decrypt(encryptedData.size(), (const unsigned char*)encryptedData.data(),
+                                     (unsigned char*)decryptedData.data(), rsa, RSA_PKCS1_PADDING);
+
+    if (result == -1) {
+        qDebug() << "Decryption failed";
+        decryptedData.clear();
+    } else {
+        decryptedData.resize(result);  // Убираем лишние байты
+    }
+
+    RSA_free(rsa);
+    BIO_free_all(keybio);
+
+    return decryptedData;
+}
+
+#ifndef ENCRYPTION_H
+#define ENCRYPTION_H
+
+#include <QByteArray>
 #include <QString>
-#include <QVector>
-#include <QRandomGenerator>
-#include <iostream>
 
-QString generateFunnyNickname() {
-    QVector<QString> adjectives = {
-        "Вонючий", "Смешной", "Злобный", "Веселый", "Медленный", "Сонный", "Быстрый", "Ленивый", "Громкий", "Тихий",
-        "Прыгающий", "Пугающий", "Танцующий", "Кричащий", "Шумный", "Загадочный", "Хитрый", "Добрый", "Угрюмый", "Маленький",
-        "Большой", "Мохнатый", "Гладкий", "Зеленый", "Синий", "Красный", "Желтый", "Розовый", "Фиолетовый", "Рыжий",
-        "Страшный", "Забавный", "Сердитый", "Спящий", "Бодрый", "Уставший", "Потный", "Мокрый", "Сухой", "Пушистый",
-        "Колючий", "Грязный", "Чистый", "Скользкий", "Шершавый", "Прекрасный", "Ужасный", "Умный", "Глупый", "Малодушный"
-    };
+class Encryption {
+public:
+    static QByteArray encryptData(const QByteArray &data, const QString &publicKey);
+    static QByteArray decryptData(const QByteArray &encryptedData, const QString &privateKey);
+};
 
-    QVector<QString> nouns = {
-        "Горилла", "Кот", "Медведь", "Лев", "Панда", "Крокодил", "Енот", "Тигр", "Бегемот", "Жираф",
-        "Слон", "Крыса", "Мышь", "Лиса", "Волк", "Заяц", "Кенгуру", "Коала", "Лама", "Барсук",
-        "Белка", "Кабан", "Петух", "Курица", "Гусь", "Утка", "Орел", "Сокол", "Сова", "Дятел",
-        "Свинья", "Овца", "Коза", "Лошадь", "Корова", "Буйвол", "Осел", "Верблюд", "Муравей", "Пчела",
-        "Жук", "Бабочка", "Стрекоза", "Паук", "Черепаха", "Ящерица", "Крокодил", "Акула", "Дельфин", "Кит"
-    };
+#endif // ENCRYPTION_H
 
-QVector<QString> moods = {
-        "😀", "😁", "😂", "🤣", "😃", "😄", "😅", "😆", "😉", "😊",
-        "😋", "😎", "😍", "😘", "😗", "😙", "😚", "☺️", "🙂", "🤗",
-        "🤩", "🤔", "🤨", "😐", "😑", "😶", "🙄", "😏", "😣", "😥",
-        "😮", "🤐", "😯", "😪", "😫", "🥱", "😴", "😌", "😛", "😜",
-        "😝", "🤤", "😒", "😓", "😔", "😕", "🙃", "🤑", "😲", "☹️"
-    };
-
-    QString adjective = adjectives.at(QRandomGenerator::global()->bounded(adjectives.size()));
-    QString noun = nouns.at(QRandomGenerator::global()->bounded(nouns.size()));
-    QString mood = moods.at(QRandomGenerator::global()->bounded(moods.size()));
-
-    QString adjective = adjectives.at(QRandomGenerator::global()->bounded(adjectives.size()));
-    QString noun = nouns.at(QRandomGenerator::global()->bounded(nouns.size()));
-
-    return adjective + " " + noun;
-}
-
-int main(int argc, char *argv[])
-{
-    QCoreApplication a(argc, argv);
-
-    QString nickname = generateFunnyNickname();
-    std::cout << "Generated nickname: " << nickname.toStdString() << std::endl;
-
-    return a.exec();
-}
