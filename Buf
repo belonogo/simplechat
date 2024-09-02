@@ -4,6 +4,103 @@
 #include <QDomDocument>
 #include <QUrl>
 #include <QMap>
+#include <QVector>
+
+// Структура для хранения узлов дерева
+struct TreeNode {
+    QString url;
+    QMap<QString, TreeNode*> children;
+
+    TreeNode(const QString& url) : url(url) {}
+};
+
+// Рекурсивная функция для добавления URL в дерево
+void addUrlToTree(TreeNode *root, const QStringList &pathParts) {
+    if (pathParts.isEmpty()) {
+        return;
+    }
+
+    QString currentPart = pathParts.first();
+    QStringList remainingParts = pathParts.mid(1);
+
+    if (!root->children.contains(currentPart)) {
+        root->children[currentPart] = new TreeNode(currentPart);
+    }
+
+    addUrlToTree(root->children[currentPart], remainingParts);
+}
+
+// Функция для чтения XML и создания дерева ссылок
+void parseXML(const QString &fileName, TreeNode *root) {
+    QFile file(fileName);
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        return;
+    }
+
+    QDomDocument doc;
+    if (!doc.setContent(&file)) {
+        file.close();
+        return;
+    }
+    file.close();
+
+    QDomNodeList urlNodes = doc.elementsByTagName("loc");
+    for (int i = 0; i < urlNodes.count(); ++i) {
+        QDomNode locNode = urlNodes.at(i);
+        if (locNode.isElement()) {
+            QString link = locNode.toElement().text();
+            QUrl url(link);
+            QStringList pathParts = url.path().split('/', Qt::SkipEmptyParts);
+            addUrlToTree(root, pathParts);
+        }
+    }
+}
+
+// Рекурсивная функция для построения дерева в QTreeWidget
+void buildTreeWidget(QTreeWidgetItem *parentItem, TreeNode *node) {
+    for (auto child : node->children) {
+        QTreeWidgetItem *childItem = new QTreeWidgetItem(parentItem);
+        childItem->setText(0, child->url);
+        buildTreeWidget(childItem, child);
+    }
+}
+
+int main(int argc, char *argv[]) {
+    QApplication a(argc, argv);
+
+    // Создаем QTreeWidget для отображения дерева ссылок
+    QTreeWidget treeWidget;
+    treeWidget.setColumnCount(1);
+    treeWidget.setHeaderLabel("Site Map");
+
+    // Создаем корень дерева
+    TreeNode root("Root");
+
+    // Парсим XML файл и строим дерево ссылок
+    parseXML("sitemap.xml", &root);
+
+    // Добавляем дерево в QTreeWidget
+    QTreeWidgetItem *rootItem = new QTreeWidgetItem(&treeWidget);
+    rootItem->setText(0, root.url);
+    buildTreeWidget(rootItem, &root);
+
+    treeWidget.addTopLevelItem(rootItem);
+    treeWidget.expandAll();
+
+    treeWidget.show();
+    return a.exec();
+}
+
+
+
+
+
+#include <QApplication>
+#include <QTreeWidget>
+#include <QFile>
+#include <QDomDocument>
+#include <QUrl>
+#include <QMap>
 
 // Функция для чтения XML и создания карты ссылок
 void parseXML(const QString &fileName, QMap<QString, QStringList> &linkMap) {
