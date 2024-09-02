@@ -1,3 +1,86 @@
+#include <QApplication>
+#include <QTreeWidget>
+#include <QFile>
+#include <QDomDocument>
+#include <QUrl>
+#include <QMap>
+
+// Функция для чтения XML и создания карты ссылок
+void parseXML(const QString &fileName, QMap<QString, QStringList> &linkMap) {
+    QFile file(fileName);
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        return;
+    }
+
+    QDomDocument doc;
+    if (!doc.setContent(&file)) {
+        file.close();
+        return;
+    }
+    file.close();
+
+    QDomNodeList urlNodes = doc.elementsByTagName("url");
+    for (int i = 0; i < urlNodes.count(); ++i) {
+        QDomNode urlNode = urlNodes.at(i);
+        if (urlNode.isElement()) {
+            QDomElement locElement = urlNode.firstChildElement("loc");
+            if (!locElement.isNull()) {
+                QString link = locElement.text();
+                QUrl url(link);
+                QString host = url.host();
+                QString path = url.path();
+
+                // Добавляем в карту ссылок
+                linkMap[host].append(path);
+            }
+        }
+    }
+}
+
+// Функция для построения дерева ссылок в QTreeWidget
+void buildLinkTree(QTreeWidget *treeWidget, const QMap<QString, QStringList> &linkMap) {
+    QTreeWidgetItem *rootItem = new QTreeWidgetItem(treeWidget);
+    rootItem->setText(0, "Root");
+
+    for (const QString &host : linkMap.keys()) {
+        QTreeWidgetItem *hostItem = new QTreeWidgetItem(rootItem);
+        hostItem->setText(0, host);
+
+        const QStringList &paths = linkMap[host];
+        for (const QString &path : paths) {
+            QTreeWidgetItem *pathItem = new QTreeWidgetItem(hostItem);
+            pathItem->setText(0, path);
+        }
+    }
+
+    treeWidget->addTopLevelItem(rootItem);
+    treeWidget->expandAll();
+}
+
+int main(int argc, char *argv[]) {
+    QApplication a(argc, argv);
+
+    // Создаем QTreeWidget для отображения дерева ссылок
+    QTreeWidget treeWidget;
+    treeWidget.setColumnCount(1);
+    treeWidget.setHeaderLabel("Site Map");
+
+    // Парсим XML файл и строим карту ссылок
+    QMap<QString, QStringList> linkMap;
+    parseXML("sitemap.xml", linkMap);
+
+    // Строим дерево ссылок в QTreeWidget
+    buildLinkTree(&treeWidget, linkMap);
+
+    treeWidget.show();
+    return a.exec();
+}
+
+
+
+
+
+
 #include "encryption.h"
 #include <openssl/rsa.h>
 #include <openssl/pem.h>
