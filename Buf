@@ -14,6 +14,115 @@ int kpi_index = 0;  // Индекс для заполнения буфера KPI
 int waiting_for_bb = 0;  // Флаг ожидания команды 0xBB
 int total_data_size = 0;  // Общее количество байт данных
 
+// Функция для вычисления контрольной суммы (на уровне байт)
+uint16_t calculate_checksum(unsigned char *data, int size) {
+    uint16_t checksum = 0;
+    for (int i = 0; i < size; i++) {
+        checksum ^= data[i];
+    }
+    return checksum;
+}
+
+// Функция для обработки пакета, представленного массивом байт
+void process_command(unsigned char *packet) {
+    // Читаем команду
+    uint8_t command = packet[0];
+
+    // Читаем флаг и размер данных (7 бит для размера)
+    uint8_t flag_size = packet[1];
+    int data_size = flag_size & 0x7F;  // Маска для получения младших 7 бит (размер)
+
+    // Читаем номер UART или командное слово
+    uint16_t uart_or_cmd = (packet[2] << 8) | packet[3];
+
+    // Контрольная сумма (последние 2 байта посылки)
+    uint16_t received_checksum = (packet[HEADER_SIZE + data_size] << 8) | packet[HEADER_SIZE + data_size + 1];
+
+    // Проверка контрольной суммы
+    int packet_size = HEADER_SIZE + data_size;
+    uint16_t calculated_checksum = calculate_checksum(packet, packet_size);
+    if (calculated_checksum != received_checksum) {
+        printf("Ошибка контрольной суммы!\n");
+        return;
+    }
+
+    // Обработка команд 0xAA и 0xBB
+    switch (command) {
+        case 0xAA:  // Начало посылки
+            printf("Принята команда 0xAA\n");
+            kpi_index = 0;  // Начинаем запись с начала буфера KPI
+
+            total_data_size = data_size;  // Устанавливаем общее количество данных
+
+            // Если данных больше 58 байт, ожидаем команду 0xBB
+            if (total_data_size > MAX_DATA_SIZE) {
+                waiting_for_bb = 1;
+
+                // Копируем служебные байты и данные в буфер KPI
+                memcpy(KPI, packet, MAX_PACKET_SIZE);
+                kpi_index = MAX_PACKET_SIZE;  // Записываем первую часть целиком
+            } else {
+                // Копируем всю посылку в буфер KPI, так как она помещается в один пакет
+                memcpy(KPI, packet, HEADER_SIZE + data_size + 2);  // +2 для контрольной суммы
+                kpi_index = HEADER_SIZE + data_size + 2;
+                waiting_for_bb = 0;  // Вся посылка получена, ожидание не требуется
+            }
+            break;
+
+        case 0xBB:  // Оставшаяся часть посылки
+            if (waiting_for_bb) {
+                printf("Принята команда 0xBB\n");
+
+                // Проверяем совпадение служебных байт (кроме первого байта)
+                if (memcmp(&packet[1], &KPI[1], HEADER_SIZE - 1) != 0) {
+                    printf("Ошибка: служебная часть не совпадает!\n");
+                    return;
+                }
+
+                // Копируем оставшиеся данные в буфер KPI
+                int remaining_data_size = total_data_size - MAX_DATA_SIZE;
+                memcpy(KPI + kpi_index, packet + HEADER_SIZE, remaining_data_size + 2);  // +2 для контрольной суммы
+                kpi_index += remaining_data_size + 2;
+
+                // После получения второй части флаг ожидания сбрасывается
+                waiting_for_bb = 0;
+            } else {
+                printf("Команда 0xBB получена без ожидания\n");
+            }
+            break;
+
+        default:
+            printf("Неизвестная команда: 0x%X\n", command);
+            break;
+    }
+}
+
+int main() {
+    // Пример первой части посылки с командой 0xAA, 60 байт данных
+    unsigned char packet1[MAX_PACKET_SIZE] = {
+        0xAA,               // Команда 0xAA
+        0x7A,               // 60 байт данных
+        0x12, 0x34,         // UART для RS
+        // 58 байт данных
+        0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+        0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0​⬤
+
+#include <stdio.h>
+#include <stdint.h>
+#include <string.h>  // Для memcpy
+
+#define MAX_PACKET_SIZE 64
+#define MAX_BUFFER_SIZE 128
+#define HEADER_SIZE 4
+#define MAX_DATA_SIZE (MAX_PACKET_SIZE - HEADER_SIZE - 2)  // 58 байт на данные
+
+// Буфер для хранения всей посылки
+unsigned char KPI[MAX_BUFFER_SIZE];
+int kpi_index = 0;  // Индекс для заполнения буфера KPI
+
+int waiting_for_bb = 0;  // Флаг ожидания команды 0xBB
+int total_data_size = 0;  // Общее количество байт данных
+
 // Структура для представления пакета
 typedef struct {
     uint8_t command;       // Команда (0xAA или 0xBB)
