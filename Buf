@@ -1,3 +1,129 @@
+#include <stdio.h>
+#include <stdint.h>
+
+#define MAX_WORDS_PER_PACKET 32
+#define KPI_BUFFER_SIZE 128
+
+// Буфер для хранения всей посылки
+unsigned char KPI[KPI_BUFFER_SIZE];
+int kpi_index = 0;  // Индекс для заполнения буфера KPI
+
+int waiting_for_bb = 0;  // Флаг ожидания команды 0xBB
+int total_words = 0;     // Общее количество слов в посылке
+
+typedef struct {
+    uint8_t command;    // Команда (0xAA или 0xBB)
+    uint8_t size_info;  // Размер данных + тип шины
+    uint16_t uart_or_cmd; // Номер UART (для RS) или командное слово (для МКО)
+    uint16_t data[MAX_WORDS_PER_PACKET];  // Данные
+    uint8_t checksum;   // Контрольная сумма
+} Packet;
+
+// Функция для проверки контрольной суммы
+uint8_t calculate_checksum(uint16_t *data, int size) {
+    uint8_t checksum = 0;
+    for (int i = 0; i < size; i++) {
+        checksum ^= (uint8_t)(data[i] & 0xFF);
+        checksum ^= (uint8_t)((data[i] >> 8) & 0xFF);
+    }
+    return checksum;
+}
+
+// Функция для обработки команды и данных
+void process_command(Packet *packet) {
+    // Получаем количество слов данных
+    int data_size = packet->size_info & 0x7F;  // Маска для получения младших 7 бит (размер)
+
+    // Проверка контрольной суммы (можно опционально добавить проверку)
+    uint8_t calculated_checksum = calculate_checksum(packet->data, data_size);
+    if (calculated_checksum != packet->checksum) {
+        printf("Ошибка контрольной суммы!\n");
+        return;
+    }
+
+    // Обработка команд 0xAA и 0xBB
+    switch (packet->command) {
+        case 0xAA:  // Начало посылки
+            printf("Принята команда 0xAA\n");
+            kpi_index = 0;  // Начинаем запись с начала буфера KPI
+            
+            // Рассчитываем общее количество слов в посылке
+            total_words = data_size;
+
+            // Проверяем, влезает ли вся посылка в один пакет
+            if (total_words <= MAX_WORDS_PER_PACKET) {
+                // Копируем данные в буфер KPI
+                for (int i = 0; i < total_words; i++) {
+                    KPI[kpi_index++] = (unsigned char)(packet->data[i] & 0xFF);
+                    KPI[kpi_index++] = (unsigned char)((packet->data[i] >> 8) & 0xFF);
+                }
+                waiting_for_bb = 0;  // Вся посылка получена, ничего ждать не нужно
+            } else {
+                // Если данных больше 32 слов, ждем команду 0xBB
+                waiting_for_bb = 1;
+
+                // Копируем первые 32 слова данных
+                for (int i = 0; i < MAX_WORDS_PER_PACKET; i++) {
+                    KPI[kpi_index++] = (unsigned char)(packet->data[i] & 0xFF);
+                    KPI[kpi_index++] = (unsigned char)((packet->data[i] >> 8) & 0xFF);
+                }
+            }
+            break;
+        
+        case 0xBB:  // Оставшаяся часть посылки
+            if (waiting_for_bb) {
+                printf("Принята команда 0xBB\n");
+
+                // Копируем оставшиеся слова данных
+                for (int i = 0; i < (total_words - MAX_WORDS_PER_PACKET); i++) {
+                    KPI[kpi_index++] = (unsigned char)(packet->data[i] & 0xFF);
+                    KPI[kpi_index++] = (unsigned char)((packet->data[i] >> 8) & 0xFF);
+                }
+                waiting_for_bb = 0;  // Получили вторую часть, больше ждать не нужно
+            } else {
+                printf("Команда 0xBB получена без ожидания\n");
+            }
+            break;
+        
+        default:
+            printf("Неизвестная команда: 0x%X\n", packet->command);
+            break;
+    }
+}
+
+int main() {
+    // Пример первой части посылки с командой 0xAA, 32 слова данных
+    Packet packet1 = {
+        .command = 0xAA,
+        .size_info = 0xA4,  // RS шина (бит 7 = 1), 36 слов данных (бит 6-0 = 36)
+        .uart_or_cmd = 0x01,  // Номер UART для RS
+        .data = {0x1234, 0x5678, 0x9ABC, 0xDEF0, /* остальные данные... */ },
+        .checksum = 0  // Контрольная сумма будет рассчитана отдельно
+    };
+    packet1.checksum = calculate_checksum(packet1.data, 32);
+    process_command(&packet1);
+
+    // Пример второй части посылки с командой 0xBB, оставшиеся слова данных
+    Packet packet2 = {
+        .command = 0xBB,
+        .size_info = 0xA4,  // RS шина (бит 7 = 1), 36 слов данных
+        .uart_or_cmd = 0x01,  // Номер UART для RS
+        .data = {0xFFFF, 0xEEEE, 0xDDDD, 0xCCCC, /* остальные данные... */ },
+        .checksum = 0  // Контрольная сумма будет рассчитана отдельно
+    };
+    packet2.checksum = calculate_checksum(packet2.data, 4);  // Только оставшиеся 4 слова
+    process_command(&packet2);
+
+    // Вывод содержимого буфера KPI для проверки
+    printf("Содержимое KPI: ");
+    for (int i = 0; i < kpi_index; i++) {
+        printf("%02X ", KPI[i]);
+    }
+    printf("\n");
+
+    return 0;
+}
+
 #include <QApplication>
 #include <QTreeWidget>
 #include <QFile>
