@@ -1,5 +1,135 @@
 #include <stdio.h>
 #include <stdint.h>
+#include <string.h>  // Для memcpy
+
+#define MAX_PACKET_SIZE 64
+#define HEADER_SIZE 4
+#define MAX_DATA_SIZE (MAX_PACKET_SIZE - HEADER_SIZE - 1)  // 58 байт на данные
+
+// Буфер для хранения всей посылки
+unsigned char KPI[MAX_PACKET_SIZE];
+int kpi_index = 0;  // Индекс для заполнения буфера KPI
+
+int waiting_for_bb = 0;  // Флаг ожидания команды 0xBB
+int total_data_size = 0;  // Общее количество байт данных
+
+// Структура для представления пакета
+typedef struct {
+    uint8_t command;       // Команда (0xAA или 0xBB)
+    uint8_t flag_size;     // Бит флага шины и размер данных
+    uint16_t uart_or_cmd;  // Номер UART (для RS) или командное слово (для МКО)
+    uint8_t data[MAX_DATA_SIZE];  // Данные (максимум 58 байт)
+    uint8_t checksum;      // Контрольная сумма
+} Packet;
+
+// Функция для вычисления контрольной суммы (на уровне байт)
+uint8_t calculate_checksum(unsigned char *data, int size) {
+    uint8_t checksum = 0;
+    for (int i = 0; i < size; i++) {
+        checksum ^= data[i];
+    }
+    return checksum;
+}
+
+// Функция для обработки пакета
+void process_command(Packet *packet) {
+    // Получаем количество байт данных (в битах 0-6 хранится размер)
+    int data_size = packet->flag_size & 0x7F;  // Маска для получения младших 7 бит (размер)
+    
+    // Проверка контрольной суммы
+    int header_size = HEADER_SIZE + data_size;
+    uint8_t calculated_checksum = calculate_checksum((unsigned char *)packet, header_size);
+    if (calculated_checksum != packet->checksum) {
+        printf("Ошибка контрольной суммы!\n");
+        return;
+    }
+
+    // Обработка команд 0xAA и 0xBB
+    switch (packet->command) {
+        case 0xAA:  // Начало посылки
+            printf("Принята команда 0xAA\n");
+            kpi_index = 0;  // Начинаем запись с начала буфера KPI
+
+            total_data_size = data_size;  // Устанавливаем общее количество данных
+
+            // Если данных больше 58 байт, ожидаем команду 0xBB
+            if (total_data_size > MAX_DATA_SIZE) {
+                waiting_for_bb = 1;
+
+                // Копируем служебные байты и данные в буфер KPI
+                memcpy(KPI, packet, MAX_PACKET_SIZE);
+                kpi_index = MAX_PACKET_SIZE;  // Записываем первую часть целиком
+            } else {
+                // Копируем всю посылку в буфер KPI, так как она помещается в один пакет
+                memcpy(KPI, packet, HEADER_SIZE + data_size);
+                kpi_index = HEADER_SIZE + data_size;
+                waiting_for_bb = 0;  // Вся посылка получена, ожидание не требуется
+            }
+            break;
+
+        case 0xBB:  // Оставшаяся часть посылки
+            if (waiting_for_bb) {
+                printf("Принята команда 0xBB\n");
+
+                // Проверяем совпадение служебных байт (кроме первого байта)
+                if (memcmp(&packet->flag_size, &KPI[1], HEADER_SIZE - 1) != 0) {
+                    printf("Ошибка: служебная часть не совпадает!\n");
+                    return;
+                }
+
+                // Копируем оставшиеся данные в буфер KPI
+                int remaining_data_size = total_data_size - MAX_DATA_SIZE;
+                memcpy(KPI + kpi_index, packet->data, remaining_data_size);
+                kpi_index += remaining_data_size;
+
+                // После получения второй части флаг ожидания сбрасывается
+                waiting_for_bb = 0;
+            } else {
+                printf("Команда 0xBB получена без ожидания\n");
+            }
+            break;
+
+        default:
+            printf("Неизвестная команда: 0x%X\n", packet->command);
+            break;
+    }
+}
+
+int main() {
+    // Пример первой части посылки с командой 0xAA, 60 байт данных
+    Packet packet1 = {
+        .command = 0xAA,
+        .flag_size = 0x7A,  // 60 байт данных (7 бит)
+        .uart_or_cmd = 0x1234,  // Номер UART для RS
+        .data = { /* 58 байт данных */ },
+        .checksum = 0  // Контрольная сумма будет рассчитана отдельно
+    };
+    packet1.checksum = calculate_checksum((unsigned char *)&packet1, HEADER_SIZE + 58);
+    process_command(&packet1);
+
+    // Пример второй части посылки с командой 0xBB, оставшиеся байты данных
+    Packet packet2 = {
+        .command = 0xBB,
+        .flag_size = 0x7A,  // 60 байт данных
+        .uart_or_cmd = 0x1234,  // Номер UART для RS
+        .data = { /* 2 байта данных */ },
+        .checksum = 0  // Контрольная сумма будет рассчитана отдельно
+    };
+    packet2.checksum = calculate_checksum((unsigned char *)&packet2, HEADER_SIZE + 2);
+    process_command(&packet2);
+
+    // Вывод содержимого буфера KPI для проверки
+    printf("Содержимое KPI: ");
+    for (int i = 0; i < kpi_index; i++) {
+        printf("%02X ", KPI[i]);
+    }
+    printf("\n");
+
+    return 0;
+}
+
+#include <stdio.h>
+#include <stdint.h>
 
 #define MAX_WORDS_PER_PACKET 32
 #define KPI_BUFFER_SIZE 128
