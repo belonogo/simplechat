@@ -1,3 +1,243 @@
+Вот подробное руководство по созданию двух приложений в Qt, используя файлы *.cpp, *.h и *.ui для сервера и клиента.
+
+1. Серверное приложение
+
+Шаг 1: Файлы для сервера
+
+Файл: server.h
+
+#ifndef SERVER_H
+#define SERVER_H
+
+#include <QWidget>
+#include <QTcpServer>
+#include <QTcpSocket>
+#include <QList>
+
+QT_BEGIN_NAMESPACE
+namespace Ui { class Server; }
+QT_END_NAMESPACE
+
+class Server : public QWidget {
+    Q_OBJECT
+
+public:
+    explicit Server(QWidget *parent = nullptr);
+    ~Server();
+
+private slots:
+    void onNewConnection();
+    void onReadyRead();
+    void onSendMessage();
+
+private:
+    Ui::Server *ui;
+    QTcpServer *server;
+    QList<QTcpSocket*> clients;
+};
+
+#endif // SERVER_H
+
+Файл: server.cpp
+
+#include "server.h"
+#include "ui_server.h"
+
+Server::Server(QWidget *parent)
+    : QWidget(parent), ui(new Ui::Server) {
+    ui->setupUi(this);
+
+    server = new QTcpServer(this);
+
+    if (!server->listen(QHostAddress::Any, 1234)) {
+        ui->messageBox->append("Server could not start!");
+    } else {
+        ui->messageBox->append("Server started!");
+    }
+
+    connect(server, &QTcpServer::newConnection, this, &Server::onNewConnection);
+    connect(ui->sendButton, &QPushButton::clicked, this, &Server::onSendMessage);
+}
+
+Server::~Server() {
+    delete ui;
+}
+
+void Server::onNewConnection() {
+    QTcpSocket *clientSocket = server->nextPendingConnection();
+    clients.append(clientSocket);
+
+    connect(clientSocket, &QTcpSocket::readyRead, this, &Server::onReadyRead);
+    connect(clientSocket, &QTcpSocket::disconnected, this, [this, clientSocket]() {
+        clients.removeAll(clientSocket);
+        clientSocket->deleteLater();
+    });
+
+    ui->messageBox->append("New client connected.");
+}
+
+void Server::onReadyRead() {
+    QTcpSocket *clientSocket = qobject_cast<QTcpSocket*>(sender());
+    if (clientSocket) {
+        QString message = QString::fromLatin1(clientSocket->readAll());
+        ui->messageBox->append("Client: " + message);
+    }
+}
+
+void Server::onSendMessage() {
+    QString message = ui->inputLine->text();
+    QByteArray data = message.toLatin1();
+    
+    for (QTcpSocket *client : clients) {
+        client->write(data);
+        client->flush();
+    }
+    
+    ui->messageBox->append("Server: " + message);
+    ui->inputLine->clear();
+}
+
+Файл: server.ui
+Это графический файл интерфейса, который можно редактировать через Qt Designer. Содержит следующие элементы:
+
+	•	QTextEdit с именем messageBox (для отображения сообщений).
+	•	QLineEdit с именем inputLine (для ввода сообщения).
+	•	QPushButton с именем sendButton (для отправки сообщений).
+
+Шаг 2: main.cpp для сервера
+
+Файл: main.cpp
+
+#include "server.h"
+#include <QApplication>
+
+int main(int argc, char *argv[]) {
+    QApplication a(argc, argv);
+    Server server;
+    server.show();
+    return a.exec();
+}
+
+2. Клиентское приложение
+
+Шаг 1: Файлы для клиента
+
+Файл: client.h
+
+#ifndef CLIENT_H
+#define CLIENT_H
+
+#include <QWidget>
+#include <QTcpSocket>
+
+QT_BEGIN_NAMESPACE
+namespace Ui { class Client; }
+QT_END_NAMESPACE
+
+class Client : public QWidget {
+    Q_OBJECT
+
+public:
+    explicit Client(QWidget *parent = nullptr);
+    ~Client();
+
+private slots:
+    void onReadyRead();
+    void onSendMessage();
+
+private:
+    Ui::Client *ui;
+    QTcpSocket *socket;
+};
+
+#endif // CLIENT_H
+
+Файл: client.cpp
+
+#include "client.h"
+#include "ui_client.h"
+
+Client::Client(QWidget *parent)
+    : QWidget(parent), ui(new Ui::Client) {
+    ui->setupUi(this);
+
+    socket = new QTcpSocket(this);
+    socket->connectToHost("127.0.0.1", 1234);
+
+    connect(socket, &QTcpSocket::readyRead, this, &Client::onReadyRead);
+    connect(ui->sendButton, &QPushButton::clicked, this, &Client::onSendMessage);
+}
+
+Client::~Client() {
+    delete ui;
+}
+
+void Client::onReadyRead() {
+    QString message = QString::fromLatin1(socket->readAll());
+    ui->messageBox->append("Server: " + message);
+}
+
+void Client::onSendMessage() {
+    QString message = ui->inputLine->text();
+    QByteArray data = message.toLatin1();
+    socket->write(data);
+    socket->flush();
+    ui->messageBox->append("Client: " + message);
+    ui->inputLine->clear();
+}
+
+Файл: client.ui
+Этот файл содержит:
+
+	•	QTextEdit с именем messageBox (для отображения сообщений).
+	•	QLineEdit с именем inputLine (для ввода сообщения).
+	•	QPushButton с именем sendButton (для отправки сообщения).
+
+Шаг 2: main.cpp для клиента
+
+Файл: main.cpp
+
+#include "client.h"
+#include <QApplication>
+
+int main(int argc, char *argv[]) {
+    QApplication a(argc, argv);
+    Client client;
+    client.show();
+    return a.exec();
+}
+
+Структура файлов
+
+Для каждого проекта (клиента и сервера) у вас должна быть такая структура:
+
+Серверный проект:
+
+ServerProject/
+├── server.cpp
+├── server.h
+├── server.ui
+├── main.cpp
+
+Клиентский проект:
+
+ClientProject/
+├── client.cpp
+├── client.h
+├── client.ui
+├── main.cpp
+
+Шаги для создания проектов в Qt Creator:
+
+	1.	Создайте новый проект для каждого приложения (сервер и клиент) через Qt Creator.
+	2.	Добавьте файлы *.h, *.cpp и *.ui в соответствующие проекты.
+	3.	В Qt Designer создайте интерфейс для серверного и клиентского приложений, как указано в инструкциях, добавив элементы управления (QLineEdit, QTextEdit, QPushButton).
+	4.	Скомпилируйте и запустите серверное приложение.
+	5.	Скомпилируйте и запустите клиентское приложение (можно запустить несколько клиентов для одновременного подключения к серверу).
+
+Теперь сервер будет принимать строки от клиентов и отправлять строки обратно, а клиенты смогут отправлять и получать сообщения через сокет.
+
+
 int main() {
     // Пример первой части посылки с командой 0xAA, 60 байт данных
     unsigned char packet1[MAX_PACKET_SIZE] = {
