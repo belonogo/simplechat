@@ -1,3 +1,63 @@
+#ifndef QTWRAPER_H
+#define QTWRAPER_H
+
+#include <QObject>
+#include <QString>
+#include <QMap>
+#include <QVector>
+#include <QMutex>
+#include <QThread>
+#include <QtConcurrent>
+#include <condition_variable>
+#include <atomic>
+#include <memory>
+
+struct processInfo {
+    QString name;
+    quint64 idthread;
+    void* func;
+    int64_t timestop = 0; // time of stop
+    int64_t pause = 0;    // pause duration
+    std::condition_variable cv;
+    std::mutex mtx;
+    std::atomic<bool> is_waiting{false};
+
+    processInfo(QString name, quint64 idthread, void* func)
+        : name(name), idthread(idthread), func(func) {}
+
+    // Delete copy constructor and assignment operator
+    processInfo(const processInfo&) = delete;
+    processInfo& operator=(const processInfo&) = delete;
+};
+
+class processArincMainFunction {
+    // PROCESS
+    QMap<quint64, std::shared_ptr<processInfo>> process;
+    QVector<quint64> processOrder;
+
+    // MEMORYBLOCK
+    QMap<QString, QByteArray> memoryBlockData;
+
+    // QUEUING_PORT
+    QVector<QByteArray> portQueuings;
+    QMap<QString, int> idPortQueuings;
+
+    QMutex lock;
+
+public:
+    int createProcess(QString processName, void* _p_process);
+    void timeWait(int64_t _time);
+    void periodicWait(void);
+    void START_ALL_PROCESS(bool* autoMode, int sleepTime);
+};
+
+extern processArincMainFunction mainArincWraper;
+
+#endif // QTWRAPER_H
+
+
+
+
 #include "qtwraper.h"
 #include <QDebug>
 #include <QThread>
