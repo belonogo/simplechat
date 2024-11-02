@@ -1,0 +1,227 @@
+Похоже, вы хотите модернизировать ваш код, чтобы добавить возможность ожидания начала и завершения процессов в указанных местах. Вам необходимо добавить синхронизацию между потоками, чтобы можно было контролировать их состояние (запущен, выполняется, завершён и т.д.).
+
+Предлагаю следующую модернизацию:
+
+1. **Добавьте состояние процесса в `processInfo`**:
+   - Добавьте переменную, которая будет хранить состояние процесса (например, перечисление с состояниями `NotStarted`, `Running`, `Paused`, `Finished`).
+   - Добавьте синхронизацию с помощью `QMutex` и `QWaitCondition` для управления состояниями и ожидания.
+
+2. **Используйте `QFuture` и `QFutureWatcher`**:
+   - При запуске процесса с помощью `QtConcurrent::run` вы получаете `QFuture`, который можно использовать для отслеживания состояния выполнения.
+   - `QFutureWatcher` позволяет подключать слоты к сигналам о завершении процесса.
+
+3. **Модифицируйте методы `timeWait` и `periodicWait`**:
+   - Используйте `QWaitCondition` и `QMutex` для ожидания, пока процесс не начнёт или не закончит работу.
+   - В `timeWait` можно установить состояние процесса в `Paused` и вызвать `wait()` на условной переменной.
+   - Когда процесс должен продолжить работу, вызывайте `wakeAll()` на условной переменной.
+
+4. **Модифицируйте `START_ALL_PROCESS`**:
+   - Перед запуском процесса установите его состояние в `Running`.
+   - После завершения процесса обновите состояние на `Finished`.
+   - Используйте `QFutureWatcher` для ожидания завершения процесса, если это необходимо.
+
+Вот как можно изменить ваш код:
+
+```cpp
+// Добавьте необходимые include
+#include <QFuture>
+#include <QFutureWatcher>
+#include <QWaitCondition>
+#include <QMutex>
+
+// В структуру processInfo добавьте состояние и средства синхронизации
+struct processInfo
+{
+    enum ProcessState { NotStarted, Running, Paused, Finished };
+
+    QString name;
+    quint64 idthread;
+    void *func;
+    int64_t timestop = 0; // время останова
+    int64_t pause = 0;    // на сколько встали
+
+    QFuture<void> future;
+    QFutureWatcher<void> *watcher = nullptr;
+    ProcessState state = NotStarted;
+    QMutex mutex;
+    QWaitCondition condition;
+
+    processInfo(QString name, quint64 idthread, void *func)
+        : name(name), idthread(idthread), func(func) {}
+    ~processInfo() {
+        if (watcher) {
+            watcher->deleteLater();
+        }
+    }
+};
+```
+
+**Измените метод `createProcess`**:
+
+```cpp
+int ArincWraper::createProcess(QString processName, void *_p_process)
+{
+    qDebug() << "ArincWraper::createProcess " << processName;
+
+    auto procPtr = QSharedPointer<processInfo>::create(processName, 0, _p_process);
+    processOrder.append(procPtr->idthread);
+
+    // Создаём QFuture и QFutureWatcher
+    QFuture<void> future = QtConcurrent::run([=]() {
+        quint64 id = reinterpret_cast<quint64>(QThread::currentThreadId());
+        procPtr->idthread = id;
+
+        {
+            QMutexLocker locker(&procPtr->mutex);
+            procPtr->state = processInfo::Running;
+            procPtr->condition.wakeAll(); // Уведомляем, что процесс начал работу
+        }
+
+        ((int(__cdecl *)())_p_process)();
+
+        {
+            QMutexLocker locker(&procPtr->mutex);
+            procPtr->state = processInfo::Finished;
+            procPtr->condition.wakeAll(); // Уведомляем, что процесс завершил работу
+        }
+    });
+
+    QFutureWatcher<void> *watcher = new QFutureWatcher<void>();
+    procPtr->watcher = watcher;
+    procPtr->future = future;
+
+    watcher->setFuture(future);
+
+    process.insert(procPtr->idthread, procPtr);
+
+    return 0;
+}
+```
+
+**Измените методы `timeWait` и `periodicWait`**:
+
+```cpp
+void ArincWraper::timeWait(int64_t _time)
+{
+    quint64 id = reinterpret_cast<quint64>(QThread::currentThreadId());
+    auto pinfo = process.find(id);
+    if (pinfo == process.end())
+        return;
+
+    qDebug() << "ArincWraper::timeWait" << _time << pinfo->data()->name;
+
+    {
+        QMutexLocker locker(&pinfo->data()->mutex);
+        pinfo->data()->pause = _time;
+        getTime(&(pinfo->data()->timestop));
+        pinfo->data()->state = processInfo::Paused;
+    }
+
+    // Ожидаем, пока процесс не продолжит работу
+    QMutexLocker locker(&pinfo->data()->mutex);
+    while (pinfo->data()->state == processInfo::Paused)
+    {
+        pinfo->data()->condition.wait(&pinfo->data()->mutex);
+    }
+}
+
+void ArincWraper::periodicWait(void)
+{
+    quint64 id = reinterpret_cast<quint64>(QThread::currentThreadId());
+    auto pinfo = process.find(id);
+    if (pinfo == process.end())
+        return;
+
+    qDebug() << "ArincWraper::periodicWait" << pinfo->data()->name;
+
+    // Аналогично ожидаем, если необходимо
+    QMutexLocker locker(&pinfo->data()->mutex);
+    while (pinfo->data()->state == processInfo::Paused)
+    {
+        pinfo->data()->condition.wait(&pinfo->data()->mutex);
+    }
+}
+```
+
+**Измените `START_ALL_PROCESS`**:
+
+```cpp
+void ArincWraper::START_ALL_PROCESS(bool *autoMode, int sleepTime)
+{
+    qDebug() << "ArincWraper::START_ALL_PROCESS";
+
+    while (1)
+    {
+        if (shouldTerminate()) {
+            qDebug() << "Terminating all processes...";
+            break;
+        }
+
+        QElapsedTimer timer;
+        timer.start();
+
+        for (int i = 0; i < processOrder.size(); i++)
+        {
+            quint64 id = processOrder[i];
+            auto pinfo = process.find(id);
+
+            qDebug() << "RUNPROCESS:" << pinfo->data()->name;
+
+            int64_t tnow;
+            getTime(&tnow);
+
+            if (tnow - pinfo->data()->timestop >= pinfo->data()->pause)
+            {
+                QMutexLocker locker(&pinfo->data()->mutex);
+                if (pinfo->data()->state == processInfo::Paused)
+                {
+                    pinfo->data()->pause = 0;
+                    pinfo->data()->timestop = 0;
+                    pinfo->data()->state = processInfo::Running;
+                    pinfo->data()->condition.wakeAll(); // Продолжаем работу процесса
+                }
+            }
+
+            // Если нужно дождаться завершения процесса
+            if (pinfo->data()->future.isRunning())
+            {
+                pinfo->data()->future.waitForFinished();
+            }
+        }
+
+        fflush(stdout);
+
+        QMetaObject::invokeMethod(window, [](){
+            window->updateWindowsMemoryBlock();
+            window->updateWindowsPorts();
+        });
+
+        if (!*autoMode)
+            return;
+
+        quint64 elapsedTime = timer.elapsed();
+        quint64 remainingTime = sleepTime - elapsedTime;
+        qDebug() << "Время выполнения: " << elapsedTime;
+        qDebug() << "Осталось работать: " << remainingTime;
+        sleep(remainingTime);
+    }
+}
+```
+
+**Пояснения**:
+
+- **Состояния процесса**: Теперь каждый процесс имеет состояние, которое можно проверять и изменять из разных потоков.
+- **Синхронизация**: Используем `QMutex` и `QWaitCondition` для безопасного доступа и ожидания состояний.
+- **Ожидание начала процесса**: В `timeWait` и `periodicWait` мы ожидаем, пока состояние процесса не станет `Running`.
+- **Ожидание завершения процесса**: В `START_ALL_PROCESS` мы используем `future.waitForFinished()` для ожидания завершения процесса.
+- **Уведомления**: Когда процесс меняет своё состояние, мы вызываем `condition.wakeAll()`, чтобы разбудить ожидающие потоки.
+
+**Дополнительные рекомендации**:
+
+- **Обработка сигналов**: Можно подключить слоты к сигналам `QFutureWatcher`, чтобы выполнять действия по завершении процесса.
+- **Проверка на завершение**: В местах ожидания можно добавить тайм-ауты или дополнительные условия, чтобы избежать бесконечного ожидания.
+- **Безопасность доступа**: Всегда используйте `QMutexLocker` для защиты доступа к разделяемым данным.
+
+**Заключение**:
+
+Внесение этих изменений позволит вам контролировать процессы более эффективно, ожидая их начала и завершения в нужных местах. Синхронизация потоков с помощью `QMutex` и `QWaitCondition` обеспечит корректное взаимодействие между ними.
