@@ -1,0 +1,263 @@
+Похоже, что проблема возникает из-за того, что идентификаторы процессов (`idthread`) присваиваются внутри лямбда-функции, передаваемой в `QtConcurrent::run()`, которая выполняется асинхронно. Это означает, что когда вы добавляете процесс в `processOrder` и `process` map, `idthread` всё ещё равен нулю. В результате, когда вы позже обращаетесь к `processOrder` и `process`, вы используете неверные идентификаторы, что приводит к некорректной работе программы.
+
+Это может объяснить, почему программа начинает работать очень быстро и последний `sleep` в `START_ALL_PROCESS` не срабатывает.
+
+**Чтобы исправить эту проблему**, нам нужно обеспечить, чтобы каждому процессу присваивался уникальный идентификатор **до** того, как он будет добавлен в `processOrder` и `process`. Также необходимо убедиться, что время ожидания в `sleep` корректно вычисляется и функция действительно приостанавливает выполнение.
+
+Вот как можно изменить ваш код:
+
+---
+
+### **1. Измените структуру `processInfo` и добавьте уникальный идентификатор процесса**
+
+```cpp
+// Внутри ArincWraper.h
+class ArincWraper : public QObject
+{
+    Q_OBJECT
+
+public:
+    // ... существующий код ...
+
+private:
+    explicit ArincWraper(QObject *parent = nullptr) : QObject(parent) {}
+    ~ArincWraper();
+
+    quint64 nextProcessId = 1; // Добавьте это для генерации уникальных идентификаторов
+
+    struct processInfo
+    {
+        QString name;
+        quint64 id;          // Уникальный идентификатор процесса
+        quint64 idthread;    // Идентификатор потока
+        void *func;
+        int64_t timestop = 0;
+        int64_t pause = 0;
+
+        // Для синхронизации
+        QFuture<void> future;
+        QFutureWatcher<void> *watcher = nullptr;
+        enum ProcessState { NotStarted, Running, Paused, Finished };
+        ProcessState state = NotStarted;
+        QMutex mutex;
+        QWaitCondition condition;
+
+        processInfo(QString name, quint64 id, void *func)
+            : name(name), id(id), func(func) {}
+        ~processInfo() {
+            if (watcher) {
+                watcher->deleteLater();
+            }
+        }
+    };
+
+    // ... остальной код ...
+};
+```
+
+### **2. Измените метод `createProcess`**
+
+```cpp
+int ArincWraper::createProcess(QString processName, void *_p_process)
+{
+    qDebug() << "ArincWraper::createProcess " << processName;
+
+    // Генерируем уникальный идентификатор процесса
+    quint64 processId = nextProcessId++;
+
+    auto procPtr = QSharedPointer<processInfo>::create(processName, processId, _p_process);
+    processOrder.append(processId);
+    process.insert(processId, procPtr);
+
+    // Создаём QFuture и QFutureWatcher
+    QFuture<void> future = QtConcurrent::run([=]() {
+        procPtr->idthread = reinterpret_cast<quint64>(QThread::currentThreadId());
+
+        {
+            QMutexLocker locker(&procPtr->mutex);
+            procPtr->state = processInfo::Running;
+            procPtr->condition.wakeAll(); // Уведомляем, что процесс начал работу
+        }
+
+        ((int(__cdecl *)())_p_process)();
+
+        {
+            QMutexLocker locker(&procPtr->mutex);
+            procPtr->state = processInfo::Finished;
+            procPtr->condition.wakeAll(); // Уведомляем, что процесс завершил работу
+        }
+    });
+
+    QFutureWatcher<void> *watcher = new QFutureWatcher<void>();
+    procPtr->watcher = watcher;
+    procPtr->future = future;
+
+    watcher->setFuture(future);
+
+    return 0;
+}
+```
+
+**Пояснение**: Теперь мы присваиваем уникальный идентификатор процесса (`processId`) до запуска потока и используем его везде для идентификации процесса. Это гарантирует, что `processOrder` и `process` map содержат корректные данные.
+
+### **3. Измените методы `timeWait` и `periodicWait`**
+
+```cpp
+void ArincWraper::timeWait(int64_t _time)
+{
+    quint64 idthread = reinterpret_cast<quint64>(QThread::currentThreadId());
+
+    // Ищем processInfo по idthread
+    QSharedPointer<processInfo> pinfo;
+    for (auto &proc : process)
+    {
+        if (proc->idthread == idthread)
+        {
+            pinfo = proc;
+            break;
+        }
+    }
+
+    if (!pinfo)
+        return;
+
+    qDebug() << "ArincWraper::timeWait" << _time << pinfo->name;
+
+    {
+        QMutexLocker locker(&pinfo->mutex);
+        pinfo->pause = _time;
+        getTime(&(pinfo->timestop));
+        pinfo->state = processInfo::Paused;
+    }
+
+    // Ожидаем, пока состояние не изменится с Paused
+    QMutexLocker locker(&pinfo->mutex);
+    while (pinfo->state == processInfo::Paused)
+    {
+        pinfo->condition.wait(&pinfo->mutex);
+    }
+}
+
+void ArincWraper::periodicWait(void)
+{
+    quint64 idthread = reinterpret_cast<quint64>(QThread::currentThreadId());
+
+    // Ищем processInfo по idthread
+    QSharedPointer<processInfo> pinfo;
+    for (auto &proc : process)
+    {
+        if (proc->idthread == idthread)
+        {
+            pinfo = proc;
+            break;
+        }
+    }
+
+    if (!pinfo)
+        return;
+
+    qDebug() << "ArincWraper::periodicWait" << pinfo->name;
+
+    // Аналогично ожидаем, если необходимо
+    QMutexLocker locker(&pinfo->mutex);
+    while (pinfo->state == processInfo::Paused)
+    {
+        pinfo->condition.wait(&pinfo->mutex);
+    }
+}
+```
+
+**Пояснение**: Мы ищем `processInfo` по `idthread`, так как теперь `id` уникален для процесса, а `idthread` соответствует конкретному потоку.
+
+### **4. Измените метод `START_ALL_PROCESS`**
+
+```cpp
+void ArincWraper::START_ALL_PROCESS(bool *autoMode, int sleepTime)
+{
+    qDebug() << "ArincWraper::START_ALL_PROCESS";
+
+    while (1)
+    {
+        if (shouldTerminate()) {
+            qDebug() << "Terminating all processes...";
+            break;
+        }
+
+        QElapsedTimer timer;
+        timer.start();
+
+        for (int i = 0; i < processOrder.size(); i++)
+        {
+            quint64 id = processOrder[i];
+            auto pinfo = process.value(id);
+
+            qDebug() << "RUNPROCESS:" << pinfo->name;
+
+            int64_t tnow;
+            getTime(&tnow);
+
+            {
+                QMutexLocker locker(&pinfo->mutex);
+                if (pinfo->state == processInfo::Paused &&
+                    tnow - pinfo->timestop >= pinfo->pause)
+                {
+                    pinfo->pause = 0;
+                    pinfo->timestop = 0;
+                    pinfo->state = processInfo::Running;
+                    pinfo->condition.wakeAll(); // Продолжаем работу процесса
+                }
+            }
+
+            // Если нужно дождаться завершения процесса
+            if (pinfo->future.isRunning())
+            {
+                // Здесь можно добавить ожидание или другие действия
+            }
+        }
+
+        fflush(stdout);
+
+        QMetaObject::invokeMethod(window, [](){
+            window->updateWindowsMemoryBlock();
+            window->updateWindowsPorts();
+        });
+
+        if (!*autoMode)
+            return;
+
+        quint64 elapsedTime = timer.elapsed();
+        if (sleepTime > elapsedTime)
+        {
+            quint64 remainingTime = sleepTime - elapsedTime;
+            qDebug() << "Время выполнения: " << elapsedTime;
+            qDebug() << "Осталось работать: " << remainingTime;
+            QThread::msleep(remainingTime);
+        }
+        else
+        {
+            qDebug() << "Время выполнения цикла превышает время сна";
+        }
+    }
+}
+```
+
+**Пояснение**:
+
+- **Исправление `sleep`**: Замените `sleep(remainingTime);` на `QThread::msleep(remainingTime);`, так как `sleep` обычно принимает секунды, а `msleep` — миллисекунды.
+- **Проверка `remainingTime`**: Убедитесь, что `remainingTime` положительное. Если `elapsedTime` больше `sleepTime`, `remainingTime` будет отрицательным, и `msleep` не будет ждать.
+
+### **5. Дополнительные рекомендации**
+
+- **Корректное использование идентификаторов**: Убедитесь, что вы используете уникальные идентификаторы процессов (`id`), а не `idthread`, для хранения и доступа к процессам.
+- **Проверка значений**: Добавьте проверки и обработку ошибок, чтобы убедиться, что все значения корректны и нет неожиданных ситуаций.
+- **Логирование**: Добавьте дополнительное логирование, чтобы отслеживать состояние процессов и время выполнения.
+
+---
+
+**Заключение**
+
+Внесение этих изменений должно решить проблему быстрого выполнения программы и несрабатывания `sleep`. Основная причина проблемы заключалась в том, что идентификаторы процессов не были корректно установлены до добавления в `processOrder` и `process`, что приводило к неверному доступу к данным процессов.
+
+Теперь, с использованием уникальных идентификаторов, вы можете надёжно управлять процессами и их состояниями. Корректное использование `QThread::msleep()` и проверка оставшегося времени ожидания обеспечат правильное приостановление выполнения между циклами.
+
+**Пожалуйста, попробуйте эти изменения и сообщите, если у вас возникнут дополнительные вопросы или проблемы.**
