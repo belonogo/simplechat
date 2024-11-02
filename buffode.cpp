@@ -1,3 +1,38 @@
+void processArincMainFunction::START_ALL_PROCESS(bool *autoMode, int sleepTime) {
+    qDebug() << "processArincMainFunction::START_ALL_PROCESS";
+
+    while (1) {
+        for (int i = 0; i < processOrder.size(); i++) {
+            quint64 id = processOrder[i];
+            auto pinfo = process.find(id);
+
+            qDebug() << "RUNPROCESS:" << pinfo->name;
+            
+            {
+                std::unique_lock<std::mutex> lock(pinfo->mtx);
+                int64_t tnow;
+                getTime(&tnow);
+                if (tnow - pinfo->timestop >= pinfo->pause) {
+                    pinfo->cv.notify_one();  // сигнализируем, что можно продолжить
+                }
+            }
+        }
+
+        // Обновление интерфейса
+        QMetaObject::invokeMethod(window, []() {
+            window->updateWindowsMemoryBlock();
+            window->updateWindowsPorts();
+        });
+
+        if (!*autoMode)
+            return;
+
+        sleep(sleepTime);
+    }
+}
+
+
+
 #include "qtwraper.h"
 #include <QDebug>
 #include <QThread>
