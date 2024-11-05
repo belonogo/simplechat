@@ -1,0 +1,28 @@
+#include <iostream>
+#include <chrono>
+#include <thread>
+
+void preciseSleep(int milliseconds) {
+    auto start = std::chrono::high_resolution_clock::now();
+    while (true) {
+        auto now = std::chrono::high_resolution_clock::now();
+        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - start).count();
+        
+        if (elapsed >= milliseconds) {
+            break;
+        }
+        
+        // Небольшой периодический сон, чтобы снизить нагрузку на процессор
+        std::this_thread::sleep_for(std::chrono::microseconds(50));
+    }
+}
+
+int main() {
+    std::cout << "Начало точной задержки" << std::endl;
+
+    preciseSleep(500);  // Задержка на 500 миллисекунд
+
+    std::cout << "Конец точной задержки" << std::endl;
+
+    return 0;
+}
