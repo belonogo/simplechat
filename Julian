@@ -1,0 +1,134 @@
+#include <QMainWindow>
+#include <QDateEdit>
+#include <QTimeEdit>
+#include <QSpinBox>
+#include <QLineEdit>
+#include <QPushButton>
+#include <QVBoxLayout>
+#include <QLabel>
+#include <cmath>
+#include <iomanip>
+#include <sstream>
+
+class JulianDateConverter : public QMainWindow {
+    Q_OBJECT
+
+public:
+    JulianDateConverter(QWidget *parent = nullptr) : QMainWindow(parent) {
+        // UI elements setup
+        dateEdit = new QDateEdit(QDate::currentDate(), this);
+        timeEdit = new QTimeEdit(QTime::currentTime(), this);
+        msSpinBox = new QSpinBox(this);
+        msSpinBox->setRange(0, 999);
+        
+        julianDaysEdit = new QLineEdit(this);
+        hexOutputEdit = new QLineEdit(this);
+        generateButton = new QPushButton("Generate Hex", this);
+
+        QVBoxLayout *layout = new QVBoxLayout;
+        layout->addWidget(new QLabel("Date:", this));
+        layout->addWidget(dateEdit);
+        layout->addWidget(new QLabel("Time:", this));
+        layout->addWidget(timeEdit);
+        layout->addWidget(new QLabel("Milliseconds:", this));
+        layout->addWidget(msSpinBox);
+        layout->addWidget(new QLabel("Julian Days:", this));
+        layout->addWidget(julianDaysEdit);
+        layout->addWidget(new QLabel("Hex (IEEE 754):", this));
+        layout->addWidget(hexOutputEdit);
+        layout->addWidget(generateButton);
+
+        QWidget *widget = new QWidget(this);
+        widget->setLayout(layout);
+        setCentralWidget(widget);
+
+        // Connect signals and slots
+        connect(dateEdit, &QDateEdit::dateChanged, this, &JulianDateConverter::updateJulianDays);
+        connect(timeEdit, &QTimeEdit::timeChanged, this, &JulianDateConverter::updateJulianDays);
+        connect(msSpinBox, QOverload<int>::of(&QSpinBox::valueChanged), this, &JulianDateConverter::updateJulianDays);
+        connect(julianDaysEdit, &QLineEdit::editingFinished, this, &JulianDateConverter::updateDateTimeFromJulianDays);
+        connect(generateButton, &QPushButton::clicked, this, &JulianDateConverter::generateHexOutput);
+        
+        // Initial calculation
+        updateJulianDays();
+    }
+
+private slots:
+    void updateJulianDays() {
+        // Convert date and time to Julian days
+        QDate date = dateEdit->date();
+        QTime time = timeEdit->time();
+        int milliseconds = msSpinBox->value();
+
+        // Calculate Julian Day
+        double julianDay = calculateJulianDays(date, time, milliseconds);
+
+        // Display Julian days
+        julianDaysEdit->setText(QString::number(julianDay, 'f', 10));
+    }
+
+    void updateDateTimeFromJulianDays() {
+        // Parse Julian days from input and convert to date/time
+        bool ok;
+        double julianDay = julianDaysEdit->text().toDouble(&ok);
+        if (ok) {
+            QDateTime dateTime = calculateDateTimeFromJulianDays(julianDay);
+
+            dateEdit->setDate(dateTime.date());
+            timeEdit->setTime(dateTime.time());
+            msSpinBox->setValue(dateTime.time().msec());
+        }
+    }
+
+    void generateHexOutput() {
+        bool ok;
+        double julianDay = julianDaysEdit->text().toDouble(&ok);
+        if (ok) {
+            uint64_t ieee754 = convertToIEEE754(julianDay);
+            std::stringstream ss;
+            ss << std::hex << std::uppercase << ieee754;
+            hexOutputEdit->setText(QString::fromStdString(ss.str()));
+        }
+    }
+
+private:
+    QDateEdit *dateEdit;
+    QTimeEdit *timeEdit;
+    QSpinBox *msSpinBox;
+    QLineEdit *julianDaysEdit;
+    QLineEdit *hexOutputEdit;
+    QPushButton *generateButton;
+
+    double calculateJulianDays(const QDate &date, const QTime &time, int milliseconds) {
+        // Convert date and time to Julian days with milliseconds
+        QDateTime dateTime(date, time);
+        double julianDay = dateTime.toJulianDay() + (time.hour() / 24.0) +
+                           (time.minute() / 1440.0) + (time.second() / 86400.0) +
+                           (milliseconds / 86400000.0);
+        return julianDay;
+    }
+
+    QDateTime calculateDateTimeFromJulianDays(double julianDay) {
+        // Convert Julian days to QDateTime
+        int julianIntPart = static_cast<int>(std::floor(julianDay));
+        double dayFraction = julianDay - julianIntPart;
+        QDate date = QDate::fromJulianDay(julianIntPart);
+
+        int hours = static_cast<int>(dayFraction * 24);
+        int minutes = static_cast<int>((dayFraction * 1440) - (hours * 60));
+        int seconds = static_cast<int>((dayFraction * 86400) - (hours * 3600) - (minutes * 60));
+        int milliseconds = static_cast<int>((dayFraction * 86400000) - (hours * 3600000) - (minutes * 60000) - (seconds * 1000));
+
+        return QDateTime(date, QTime(hours, minutes, seconds, milliseconds));
+    }
+
+    uint64_t convertToIEEE754(double value) {
+        // Convert a double value to IEEE 754 format
+        union {
+            double d;
+            uint64_t u;
+        } ieee754;
+        ieee754.d = value;
+        return ieee754.u;
+    }
+};
