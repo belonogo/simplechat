@@ -1,0 +1,80 @@
+#include <QFile>
+#include <QMutex>
+#include <QDateTime>
+#include <QTimer>
+#include <QTextStream>
+#include <QThread>
+#include <QQueue>
+#include <QMutexLocker>
+
+class Logger : public QObject {
+    Q_OBJECT
+
+public:
+    static Logger& instance() {
+        static Logger logger;
+        return logger;
+    }
+
+    void log(const QString& message) {
+        QMutexLocker locker(&bufferMutex);
+        logBuffer.enqueue(QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss") + ": " + message);
+    }
+
+private:
+    Logger() : logFile("log.txt") {
+        logThread = new QThread(this);
+        moveToThread(logThread);
+
+        // Запускаем таймер для периодической записи в файл
+        QTimer* flushTimer = new QTimer();
+        connect(flushTimer, &QTimer::timeout, this, &Logger::flush);
+        flushTimer->start(1000); // Каждую секунду
+
+        // Таймер для очистки файла каждые 2 часа
+        QTimer* clearTimer = new QTimer();
+        connect(clearTimer, &QTimer::timeout, this, &Logger::clearLog);
+        clearTimer->start(2 * 60 * 60 * 1000); // 2 часа в миллисекундах
+
+        logThread->start();
+    }
+
+    ~Logger() {
+        logThread->quit();
+        logThread->wait();
+    }
+
+    Logger(const Logger&) = delete;
+    Logger& operator=(const Logger&) = delete;
+
+    void flush() {
+        QMutexLocker locker(&bufferMutex);
+        if (logBuffer.isEmpty()) return;
+
+        if (logFile.open(QIODevice::Append | QIODevice::Text)) {
+            QTextStream out(&logFile);
+            while (!logBuffer.isEmpty()) {
+                out << logBuffer.dequeue() << "\n";
+            }
+            logFile.close();
+        }
+    }
+
+    void clearLog() {
+        QMutexLocker locker(&bufferMutex);
+        if (logFile.open(QIODevice::WriteOnly | QIODevice::Text)) {
+            logFile.resize(0);  // Очищаем файл
+            logFile.close();
+        }
+    }
+
+    QFile logFile;
+    QMutex bufferMutex;
+    QQueue<QString> logBuffer;
+    QThread* logThread;
+};
+
+// Пример использования:
+// Logger::instance().log("Тестовое сообщение");
+
+#include "Logger.moc"  // Для обработки Qt сигналов и слотов
