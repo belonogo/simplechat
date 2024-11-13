@@ -1,0 +1,26 @@
+private:
+    double calculateJulianDays(const QDate &date, const QTime &time, int milliseconds) {
+        int year = date.year();
+        int month = date.month();
+        int day = date.day();
+
+        if (month <= 2) {
+            year -= 1;
+            month += 12;
+        }
+
+        int A = year / 100;
+        int B = 2 - A + (A / 4);
+
+        double JD = std::floor(365.25 * (year + 4716))
+                    + std::floor(30.6001 * (month + 1))
+                    + day + B - 1524.5;
+
+        // Add the time component
+        double dayFraction = (time.hour() / 24.0)
+                             + (time.minute() / 1440.0)
+                             + ((time.second() + milliseconds / 1000.0) / 86400.0);
+        
+        JD += dayFraction;
+        return JD;
+    }
