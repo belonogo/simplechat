@@ -1,0 +1,118 @@
+Для создания отдельного QWidget, который будет отображать логи и фильтровать их по тегу, вам потребуется следующее:
+	1.	Класс виджета для отображения логов с функциональностью фильтрации по тегу.
+	2.	Поток для виджета, чтобы запустить его в отдельном потоке.
+	3.	Передача сообщений в виджет через потоко-безопасные механизмы, такие как сигналы и слоты.
+
+Шаг 1: Определение enum для тегов
+
+Создадим enum для тегов, чтобы фильтровать логи.
+
+enum class LogTag {
+    Info,
+    Warning,
+    Error
+};
+
+Шаг 2: Класс LogWidget для отображения и фильтрации логов
+
+LogWidget будет наследоваться от QWidget и иметь возможность фильтровать записи по тегам.
+
+#include <QWidget>
+#include <QTextEdit>
+#include <QVBoxLayout>
+#include <QComboBox>
+
+class LogWidget : public QWidget {
+    Q_OBJECT
+
+public:
+    explicit LogWidget(QWidget *parent = nullptr) : QWidget(parent) {
+        QVBoxLayout *layout = new QVBoxLayout(this);
+
+        // Выбор тега для фильтрации
+        tagFilter = new QComboBox(this);
+        tagFilter->addItem("All", QVariant::fromValue(LogTag::Info));
+        tagFilter->addItem("Info", QVariant::fromValue(LogTag::Info));
+        tagFilter->addItem("Warning", QVariant::fromValue(LogTag::Warning));
+        tagFilter->addItem("Error", QVariant::fromValue(LogTag::Error));
+        layout->addWidget(tagFilter);
+
+        // Текстовое поле для вывода логов
+        logView = new QTextEdit(this);
+        logView->setReadOnly(true);
+        layout->addWidget(logView);
+
+        connect(tagFilter, &QComboBox::currentIndexChanged, this, &LogWidget::updateLogDisplay);
+    }
+
+public slots:
+    void addLog(const QString &message, LogTag tag) {
+        logs.append({tag, message});
+        updateLogDisplay();
+    }
+
+private slots:
+    void updateLogDisplay() {
+        logView->clear();
+        LogTag selectedTag = tagFilter->currentData().value<LogTag>();
+
+        for (const auto &log : logs) {
+            if (selectedTag == LogTag::Info || log.first == selectedTag) {
+                logView->append(log.second);
+            }
+        }
+    }
+
+private:
+    QTextEdit *logView;
+    QComboBox *tagFilter;
+    QList<QPair<LogTag, QString>> logs;  // Список логов с тегами
+};
+
+Шаг 3: Запуск виджета в отдельном потоке
+
+Создаем отдельный поток для LogWidget, чтобы его выполнение не влияло на основное окно.
+
+#include <QThread>
+#include <QMainWindow>
+#include "LogWidget.h"
+
+class LogThread : public QThread {
+    Q_OBJECT
+public:
+    explicit LogThread(QObject *parent = nullptr) : QThread(parent) {}
+    void run() override {
+        LogWidget *logWidget = new LogWidget();
+        logWidget->show();
+        exec();
+        delete logWidget;
+    }
+};
+
+Шаг 4: Запуск виджета из основного окна
+
+В основном окне можно создать и запустить LogThread, а также отправлять логи в LogWidget через сигналы и слоты.
+
+#include "MainWindow.h"
+#include "LogThread.h"
+
+MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
+    logThread = new LogThread(this);
+    logThread->start();
+
+    connect(this, &MainWindow::sendLog, logThread->logWidget, &LogWidget::addLog);
+}
+
+void MainWindow::logMessage(const QString &message, LogTag tag) {
+    emit sendLog(message, tag);
+}
+
+Шаг 5: Отправка логов в виджет
+
+Теперь вы можете вызывать logMessage в основном окне, чтобы отправлять сообщения в LogWidget:
+
+logMessage("This is an info message", LogTag::Info);
+logMessage("This is a warning message", LogTag::Warning);
+logMessage("This is an error message", LogTag::Error);
+
+Таким образом, LogWidget работает в отдельном потоке, фильтрует логи по тегу и отображает их в отдельном окне.
