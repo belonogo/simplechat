@@ -1,0 +1,28 @@
+#include <QDateTime>
+#include <QDebug>
+
+double qDateTimeToMjd(const QDateTime& dateTime) {
+    // Базовая дата для MJD: 17 ноября 1858 года, 00:00 UTC
+    QDateTime baseDate = QDateTime(QDate(1858, 11, 17), QTime(0, 0), Qt::UTC);
+
+    // Вычисляем количество дней между датой и базовой датой
+    qint64 days = baseDate.daysTo(dateTime);
+
+    // Вычисляем долю дня в миллисекундах и делим на миллисекунды в сутках
+    qint64 millisecondsInDay = 86400000;
+    qint64 millisecondsSinceMidnight = dateTime.time().msecsSinceStartOfDay();
+    double fractionalDay = static_cast<double>(millisecondsSinceMidnight) / millisecondsInDay;
+
+    // MJD — это полное число дней + дробная часть дня
+    double mjd = static_cast<double>(days) + fractionalDay;
+    return mjd;
+}
+
+int main() {
+    // Пример использования: преобразование QDateTime в MJD
+    QDateTime dateTime(QDate(2000, 1, 1), QTime(0, 0, 0, 999), Qt::UTC); // 1 января 2000 года, 00:00:00.999
+    double mjd = qDateTimeToMjd(dateTime);
+
+    qDebug() << "MJD:" << mjd;
+    return 0;
+}
