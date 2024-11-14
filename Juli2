@@ -1,0 +1,75 @@
+#include <QDateTime>
+#include <QtMath>
+
+// Функция для перевода QDateTime в модифицированную юлианскую дату (MJD)
+double qDateTimeToMJD(const QDateTime& dateTime) {
+    QDate date = dateTime.date();
+    QTime time = dateTime.time();
+
+    int year = date.year();
+    int month = date.month();
+    int day = date.day();
+
+    if (month <= 2) {
+        year -= 1;
+        month += 12;
+    }
+
+    int A = year / 100;
+    int B = 2 - A + (A / 4);
+
+    double JD = static_cast<double>(qFloor(365.25 * (year + 4716)))
+              + static_cast<double>(qFloor(30.6001 * (month + 1)))
+              + day + B - 1524.5;
+
+    // Добавляем дробную часть от времени
+    double dayFraction = (time.hour() + time.minute() / 60.0 + time.second() / 3600.0 + time.msec() / 3600000.0) / 24.0;
+    JD += dayFraction;
+
+    // Преобразуем JD в MJD
+    double MJD = JD - 2400000.5;
+
+    // Округляем до 13 знаков после запятой
+    MJD = qRound(MJD * 1e13) / 1e13;
+
+    return MJD;
+}
+
+// Функция для преобразования MJD в QDateTime
+QDateTime mjdToQDateTime(double mjd) {
+    // Преобразуем MJD в JD и округляем до 13 знаков после запятой
+    double JD = qRound((mjd + 2400000.5) * 1e13) / 1e13;
+
+    int Z = static_cast<int>(JD + 0.5);
+    double F = (JD + 0.5) - Z;
+
+    int A;
+    if (Z < 2299161) {
+        A = Z;
+    } else {
+        int alpha = static_cast<int>((Z - 1867216.25) / 36524.25);
+        A = Z + 1 + alpha - (alpha / 4);
+    }
+
+    int B = A + 1524;
+    int C = static_cast<int>((B - 122.1) / 365.25);
+    int D = static_cast<int>(365.25 * C);
+    int E = static_cast<int>((B - D) / 30.6001);
+
+    int day = B - D - static_cast<int>(30.6001 * E);
+    int month = (E < 14) ? E - 1 : E - 13;
+    int year = (month > 2) ? C - 4716 : C - 4715;
+
+    // Преобразуем дробную часть F в часы, минуты, секунды и миллисекунды
+    double dayFraction = F * 24.0;
+    int hour = static_cast<int>(dayFraction);
+    dayFraction = (dayFraction - hour) * 60.0;
+    int minute = static_cast<int>(dayFraction);
+    dayFraction = (dayFraction - minute) * 60.0;
+    int second = static_cast<int>(dayFraction);
+    int msec = static_cast<int>((dayFraction - second) * 1000);
+
+    QDate date(year, month, day);
+    QTime time(hour, minute, second, msec);
+    return QDateTime(date, time, Qt::UTC);
+}
