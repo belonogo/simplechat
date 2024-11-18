@@ -1,0 +1,97 @@
+#include <QSpinBox>
+#include <QRegExpValidator>
+
+class HexSpinBox : public QSpinBox {
+    Q_OBJECT
+
+public:
+    explicit HexSpinBox(QWidget *parent = nullptr);
+
+    void setBitStep(int bitPosition);
+
+protected:
+    QString textFromValue(int value) const override;
+    QValidator::State validate(QString &input, int &pos) const override;
+    int valueFromText(const QString &text) const override;
+    void stepBy(int steps) override;
+
+private:
+    int bitStep = 1;
+};
+
+#include "hexspinbox.h"
+
+HexSpinBox::HexSpinBox(QWidget *parent) : QSpinBox(parent) {
+    setDisplayIntegerBase(16);
+    setMinimum(0);
+    setMaximum(0xFFFF); // Устанавливаем максимальное значение
+    setValue(0);
+}
+
+QString HexSpinBox::textFromValue(int value) const {
+    int width = QString::number(maximum(), 16).length();
+    QString hexString = QString("%1").arg(value, width, 16, QChar('0')).toUpper();
+    return "0x" + hexString;
+}
+
+QValidator::State HexSpinBox::validate(QString &input, int &pos) const {
+    Q_UNUSED(pos);
+
+    QString copy = input.trimmed();
+
+    // Проверяем и удаляем префикс 0x или 0X
+    if (copy.startsWith("0x", Qt::CaseInsensitive)) {
+        copy.remove(0, 2);
+    }
+
+    if (copy.isEmpty())
+        return QValidator::Intermediate;
+
+    // Проверяем, содержит ли строка только допустимые символы
+    QRegExp regExp("^[0-9A-Fa-f]+$");
+    if (!regExp.exactMatch(copy))
+        return QValidator::Invalid;
+
+    bool ok;
+    int val = copy.toInt(&ok, 16);
+
+    if (!ok)
+        return QValidator::Invalid;
+
+    if (val < minimum() || val > maximum())
+        return QValidator::Invalid;
+
+    return QValidator::Acceptable;
+}
+
+int HexSpinBox::valueFromText(const QString &text) const {
+    QString copy = text.trimmed();
+
+    // Удаляем префикс 0x или 0X, если он есть
+    if (copy.startsWith("0x", Qt::CaseInsensitive)) {
+        copy.remove(0, 2);
+    }
+
+    bool ok;
+    int val = copy.toInt(&ok, 16);
+
+    if (ok) {
+        return val;
+    } else {
+        return minimum();
+    }
+}
+
+void HexSpinBox::stepBy(int steps) {
+    int val = value();
+    if (steps > 0) {
+        val += bitStep;
+    } else {
+        val -= bitStep;
+    }
+    setValue(val);
+}
+
+void HexSpinBox::setBitStep(int bitPosition) {
+    bitStep = 1 << bitPosition;
+}
