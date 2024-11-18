@@ -1,0 +1,29 @@
+QValidator::State HexSpinBox::validate(QString &input, int &pos) const {
+    Q_UNUSED(pos);
+
+    QString copy = input.trimmed();
+
+    // Проверяем и удаляем префикс 0x или 0X
+    if (copy.startsWith("0x", Qt::CaseInsensitive)) {
+        copy.remove(0, 2);
+    }
+
+    if (copy.isEmpty())
+        return QValidator::Intermediate;
+
+    // Проверяем, содержит ли строка только допустимые символы
+    QRegExp regExp("^[0-9A-Fa-f]+$");
+    if (!regExp.exactMatch(copy))
+        return QValidator::Invalid;
+
+    bool ok;
+    int val = copy.toInt(&ok, 16);
+
+    if (!ok)
+        return QValidator::Invalid;
+
+    if (val < minimum() || val > maximum())
+        return QValidator::Invalid;
+
+    return QValidator::Acceptable;
+}
