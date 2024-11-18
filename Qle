@@ -1,0 +1,48 @@
+#include <QLineEdit>
+#include <QRegularExpressionValidator>
+#include <QVBoxLayout>
+#include <QWidget>
+
+class HexLineEdit : public QWidget {
+    Q_OBJECT
+
+public:
+    HexLineEdit(QWidget *parent = nullptr) : QWidget(parent) {
+        // Создаём QLineEdit
+        lineEdit = new QLineEdit(this);
+
+        // Устанавливаем валидатор на HEX символы
+        QRegularExpression hexRegex("^[0-9A-Fa-f]{0,256}$");
+        auto *validator = new QRegularExpressionValidator(hexRegex, this);
+        lineEdit->setValidator(validator);
+
+        // Подключаем обработчик изменения текста
+        connect(lineEdit, &QLineEdit::textChanged, this, &HexLineEdit::onTextChanged);
+
+        // Размещаем QLineEdit в layout
+        auto *layout = new QVBoxLayout(this);
+        layout->addWidget(lineEdit);
+        setLayout(layout);
+    }
+
+private slots:
+    void onTextChanged(const QString &text) {
+        // Убираем пробелы и проверяем длину текста
+        QString cleanedText = text.trimmed();
+
+        if (cleanedText.length() % 2 != 0) {
+            // Добавляем ноль в начало, если длина текста нечётная
+            cleanedText = "0" + cleanedText;
+        }
+
+        if (lineEdit->text() != cleanedText) {
+            // Обновляем текст, избегая повторных сигналов
+            lineEdit->blockSignals(true);
+            lineEdit->setText(cleanedText.toUpper());
+            lineEdit->blockSignals(false);
+        }
+    }
+
+private:
+    QLineEdit *lineEdit;
+};
