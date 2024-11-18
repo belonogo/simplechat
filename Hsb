@@ -1,4 +1,6 @@
+
 #include <QSpinBox>
+#include <QLineEdit>
 #include <QValidator>
 #include <QRegExpValidator>
 #include <QKeyEvent>
@@ -7,15 +9,18 @@ class HexSpinBox : public QSpinBox {
     Q_OBJECT
 
 public:
-    explicit HexSpinBox(QWidget* parent = nullptr) 
+    explicit HexSpinBox(QWidget* parent = nullptr)
         : QSpinBox(parent), maxDigits(4) {
         setDisplayIntegerBase(16);  // Устанавливаем HEX формат
         setRange(0, 0xFFFF);       // Устанавливаем диапазон значений
         setValue(0);               // Начальное значение
 
-        // Валидатор для ввода HEX символов
+        // Установка валидатора на lineEdit()
         QRegExp hexRegex("^[0-9a-fA-F]{1,4}$");
-        setValidator(new QRegExpValidator(hexRegex, this));
+        QValidator* validator = new QRegExpValidator(hexRegex, this);
+        if (QLineEdit* edit = lineEdit()) {
+            edit->setValidator(validator);
+        }
 
         // Устанавливаем ширину для отображения ведущих нулей
         updateMaxDigits();
@@ -38,11 +43,6 @@ protected:
         return text.toInt(&ok, 16); // Преобразуем из HEX в int
     }
 
-    // Установка валидатора
-    QValidator::State validate(QString& input, int& pos) const override {
-        return validator->validate(input, pos);
-    }
-
     // Обрабатываем шаг как изменение на 1 бит
     void stepBy(int steps) override {
         setValue(value() + steps);
@@ -50,7 +50,6 @@ protected:
 
 private:
     int maxDigits;                // Количество цифр в отображении
-    QValidator* validator;        // Валидатор для проверки ввода
 
     // Обновляем количество отображаемых цифр
     void updateMaxDigits() {
