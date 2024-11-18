@@ -1,0 +1,79 @@
+#include <QSpinBox>
+#include <QRegExpValidator>
+
+class HexSpinBox : public QSpinBox {
+    Q_OBJECT
+
+public:
+    explicit HexSpinBox(QWidget *parent = nullptr);
+
+    void setBitStep(int bitPosition);
+
+protected:
+    QString textFromValue(int value) const override;
+    QValidator::State validate(QString &input, int &pos) const override;
+    int valueFromText(const QString &text) const override;
+    void stepBy(int steps) override;
+
+private:
+    int bitStep = 1;
+};
+
+#include "hexspinbox.h"
+
+HexSpinBox::HexSpinBox(QWidget *parent) : QSpinBox(parent) {
+    setPrefix("0x");
+    setDisplayIntegerBase(16);
+    setMinimum(0);
+    setMaximum(0xFFFF);
+    setValue(0);
+}
+
+QString HexSpinBox::textFromValue(int value) const {
+    int width = QString::number(maximum(), 16).length();
+    return QString("%1").arg(value, width, 16, QChar('0')).toUpper();
+}
+
+QValidator::State HexSpinBox::validate(QString &input, int &pos) const {
+    Q_UNUSED(pos);
+
+    if (input.startsWith("0x") || input.startsWith("0X"))
+        input = input.mid(2);
+
+    if (input.isEmpty())
+        return QValidator::Intermediate;
+
+    QRegExp regExp("^[0-9A-Fa-f]+$");
+    if (regExp.exactMatch(input)) {
+        bool ok;
+        int val = input.toInt(&ok, 16);
+        if (ok && val >= minimum() && val <= maximum())
+            return QValidator::Acceptable;
+        else
+            return QValidator::Intermediate;
+    }
+    return QValidator::Invalid;
+}
+
+int HexSpinBox::valueFromText(const QString &text) const {
+    QString copy = text;
+    if (copy.startsWith("0x") || copy.startsWith("0X"))
+        copy = copy.mid(2);
+
+    bool ok;
+    return copy.toInt(&ok, 16);
+}
+
+void HexSpinBox::stepBy(int steps) {
+    int val = value();
+    if (steps > 0) {
+        val += bitStep;
+    } else {
+        val -= bitStep;
+    }
+    setValue(val);
+}
+
+void HexSpinBox::setBitStep(int bitPosition) {
+    bitStep = 1 << bitPosition;
+}
