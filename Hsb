@@ -19,7 +19,6 @@ public:
         updateValidator();
     }
 
-    // Устанавливаем максимальное значение
     void setMaxValue(int maxValue) {
         setMaximum(maxValue);
         updateMaxDigits();
@@ -35,7 +34,18 @@ protected:
     // Конвертация текста в значение
     int valueFromText(const QString& text) const override {
         bool ok;
-        return text.toInt(&ok, 16);
+        int value = text.toInt(&ok, 16);
+        return ok ? value : 0;
+    }
+
+    // Валидатор для ограничения количества символов
+    QValidator::State validate(QString& input, int& pos) const override {
+        if (input.length() > maxDigits) {
+            return QValidator::Invalid;
+        }
+        bool ok;
+        input.toInt(&ok, 16);
+        return ok ? QValidator::Acceptable : QValidator::Invalid;
     }
 
     // Обрабатываем шаг как изменение на 1 бит
@@ -46,18 +56,14 @@ protected:
 private:
     int maxDigits; // Количество цифр в отображении
 
-    // Обновляем количество отображаемых цифр
     void updateMaxDigits() {
         maxDigits = QString::number(maximum(), 16).length();
     }
 
-    // Обновляем валидатор для ограничения количества символов
     void updateValidator() {
-        QString pattern = QString("^[0-9a-fA-F]{1,%1}$").arg(maxDigits);
-        QRegExp hexRegex(pattern);
-        QValidator* validator = new QRegExpValidator(hexRegex, this);
-
         if (QLineEdit* edit = lineEdit()) {
+            QString pattern = QString("^[0-9a-fA-F]{1,%1}$").arg(maxDigits);
+            QValidator* validator = new QRegExpValidator(QRegExp(pattern), this);
             edit->setValidator(validator);
         }
     }
