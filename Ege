@@ -1,1 +1,40 @@
 
+def count_Ns(L, U, mod_value, multiplier, increment):
+    # Calculate N_min and N_max based on R's bounds
+    N_min = (L - increment + multiplier - 1) // multiplier  # Ceiling division
+    N_max = (U - increment) // multiplier  # Floor division
+
+    # Adjust N_min to the next number where N % 4 == mod_value
+    while N_min % 4 != mod_value:
+        N_min += 1
+
+    # Adjust N_max to the previous number where N % 4 == mod_value
+    while N_max % 4 != mod_value:
+        N_max -= 1
+
+    # If N_min > N_max after adjustment, there are no Ns in this case
+    if N_min > N_max:
+        return 0
+
+    # Number of Ns is ((N_max - N_min) // 4) + 1
+    return ((N_max - N_min) // 4) + 1
+
+# Interval bounds
+L = 1_000_000_000
+U = 1_789_456_123
+
+total_count = 0
+
+# Case 1: N % 4 == 0
+total_count += count_Ns(L, U, mod_value=0, multiplier=2, increment=0)
+
+# Case 2: N % 4 == 1
+total_count += count_Ns(L, U, mod_value=1, multiplier=2, increment=1)
+
+# Case 3: N % 4 == 2
+total_count += count_Ns(L, U, mod_value=2, multiplier=4, increment=2)
+
+# Case 4: N % 4 == 3
+total_count += count_Ns(L, U, mod_value=3, multiplier=4, increment=3)
+
+print(total_count)
