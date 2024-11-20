@@ -1,0 +1,50 @@
+#include <QString>
+#include <QList>
+#include <QDebug>
+
+int main() {
+    // Исходная строка из 124 символов (31 слово по 4 символа)
+    QString hexString = "Ваш_124-символьный_шестнадцатеричный_строка_здесь";
+
+    // Проверка длины строки
+    if (hexString.length() != 124) {
+        qWarning() << "Длина строки должна быть 124 символа.";
+        return -1;
+    }
+
+    int wordLength = 4; // Длина одного слова в символах
+    int numWords = 31;  // Количество слов
+    QList<quint16> words;
+
+    // Разбиваем строку на отдельные слова и конвертируем их в числа
+    for (int i = 0; i < numWords; ++i) {
+        QString wordHex = hexString.mid(i * wordLength, wordLength);
+        bool ok;
+        quint16 word = wordHex.toUShort(&ok, 16);
+        if (!ok) {
+            qWarning() << "Ошибка преобразования слова:" << wordHex;
+            return -1;
+        }
+        words.append(word);
+    }
+
+    // Вычисляем контрольную сумму
+    quint32 checksum = 0;
+    for (const auto& word : words) {
+        checksum += word;
+    }
+    checksum %= 65536; // Берем по модулю 65536
+
+    // Преобразуем контрольную сумму обратно в строку из 4 символов
+    QString checksumHex = QString("%1").arg(checksum, 4, 16, QLatin1Char('0')).toUpper();
+
+    // Добавляем контрольную сумму к исходной строке
+    QString resultHexString = hexString + checksumHex;
+
+    // Выводим результат
+    qDebug() << "Исходная строка: " << hexString;
+    qDebug() << "Контрольная сумма: " << checksumHex;
+    qDebug() << "Результирующая строка: " << resultHexString;
+
+    return 0;
+}
