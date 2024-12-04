@@ -1,85 +1,76 @@
-#include <QSslSocket>
-#include <QCoreApplication>
-#include <QJsonDocument>
-#include <QJsonObject>
-#include <QDebug>
+#include "HttpServer.h"
 
-class HttpsClient : public QObject {
-    Q_OBJECT
+HttpServer::HttpServer(QObject *parent) : QTcpServer(parent) {}
 
-public:
-    explicit HttpsClient(const QString& host, quint16 port, QObject* parent = nullptr)
-        : QObject(parent), host(host), port(port) {}
-
-    void sendRequest(const QJsonObject& request) {
-        // Настройка SSL-сокета
-        QSslSocket* sslSocket = new QSslSocket(this);
-
-        connect(sslSocket, &QSslSocket::encrypted, this, [this, sslSocket, request]() {
-            // Сериализуем запрос и отправляем его на сервер
-            QJsonDocument requestDoc(request);
-            sslSocket->write(requestDoc.toJson(QJsonDocument::Compact));
-            sslSocket->flush();
-        });
-
-        connect(sslSocket, &QSslSocket::readyRead, this, [this, sslSocket]() {
-            // Читаем ответ от сервера
-            QByteArray responseData = sslSocket->readAll();
-            QJsonDocument responseDoc = QJsonDocument::fromJson(responseData);
-
-            if (responseDoc.isNull() || !responseDoc.isObject()) {
-                qWarning() << "Invalid response received from server.";
-                return;
-            }
-
-            QJsonObject response = responseDoc.object();
-            qDebug() << "Response from server:" << response;
-            sslSocket->disconnectFromHost();
-        });
-
-        connect(sslSocket, &QSslSocket::disconnected, sslSocket, &QSslSocket::deleteLater);
-
-        connect(sslSocket, QOverload<const QList<QSslError>&>::of(&QSslSocket::sslErrors), this,
-                [sslSocket](const QList<QSslError>& errors) {
-                    qWarning() << "SSL errors occurred:";
-                    for (const QSslError& error : errors) {
-                        qWarning() << error.errorString();
-                    }
-                    sslSocket->ignoreSslErrors();
-                });
-
-        // Подключаемся к серверу
-        sslSocket->connectToHostEncrypted(host, port);
-
-        if (!sslSocket->waitForEncrypted(3000)) {
-            qWarning() << "Failed to establish an encrypted connection:" << sslSocket->errorString();
-        }
+bool HttpServer::startServer(quint16 port) {
+    if (!listen(QHostAddress::Any, port)) {
+        qCritical() << "Unable to start the server:" << errorString();
+        return false;
     }
-
-private:
-    QString host;
-    quint16 port;
-};
-
-// Main function
-#include <QCoreApplication>
-
-int main(int argc, char* argv[]) {
-    QCoreApplication app(argc, argv);
-
-    QString host = "127.0.0.1";
-    quint16 port = 8443;
-
-    HttpsClient client(host, port);
-
-    // Пример JSON-запросов
-    QJsonObject pingRequest{{"command", "ping"}};
-    client.sendRequest(pingRequest);
-
-    QJsonObject echoRequest{{"command", "echo"}, {"data", "Hello, HTTPS Server!"}};
-    client.sendRequest(echoRequest);
-
-    return app.exec();
+    qDebug() << "Server started on port" << port;
+    return true;
 }
 
-#include "main.moc"
+void HttpServer::incomingConnection(qintptr socketDescriptor) {
+    QTcpSocket *client = new QTcpSocket(this);
+    if (!client->setSocketDescriptor(socketDescriptor)) {
+        delete client;
+        return;
+    }
+    connect(client, &QTcpSocket::readyRead, this, &HttpServer::handleRequest);
+    connect(client, &QTcpSocket::disconnected, client, &QTcpSocket::deleteLater);
+    qDebug() << "New client connected:" << client->peerAddress().toString();
+}
+
+void HttpServer::handleRequest() {
+    QTcpSocket *client = qobject_cast<QTcpSocket *>(sender());
+    if (!client)
+        return;
+
+    // Чтение запроса
+    QByteArray requestData = client->readAll();
+
+    // Простая обработка для проверки
+    if (requestData.startsWith("POST")) {
+        // Извлечение данных JSON из тела запроса
+        int jsonStartIndex = requestData.indexOf("\r\n\r\n") + 4;
+        QByteArray jsonData = requestData.mid(jsonStartIndex);
+        processJsonRequest(jsonData, client);
+    } else {
+        client->disconnectFromHost();
+    }
+}
+
+void HttpServer::processJsonRequest(const QByteArray &data, QTcpSocket *client) {
+    QJsonDocument jsonDoc = QJsonDocument::fromJson(data);
+    if (!jsonDoc.isObject()) {
+        qWarning() << "Invalid JSON request";
+        QJsonObject errorResponse;
+        errorResponse["status"] = "error";
+        errorResponse["message"] = "Invalid JSON format";
+        sendJsonResponse(errorResponse, client);
+        return;
+    }
+
+    QJsonObject request = jsonDoc.object();
+    qDebug() << "Received JSON request:" << request;
+
+    // Обработка запроса и создание ответа
+    QJsonObject response;
+    response["status"] = "success";
+    response["received"] = request;
+
+    sendJsonResponse(response, client);
+}
+
+void HttpServer::sendJsonResponse(const QJsonObject &response, QTcpSocket *client) {
+    QJsonDocument jsonDoc(response);
+    QByteArray responseData = "HTTP/1.1 200 OK\r\n"
+                              "Content-Type: application/json\r\n"
+                              "Content-Length: " + QByteArray::number(jsonDoc.toJson().size()) + "\r\n\r\n" +
+                              jsonDoc.toJson();
+
+    client->write(responseData);
+    client->flush();
+    client->disconnectFromHost();
+}
