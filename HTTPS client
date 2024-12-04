@@ -1,0 +1,85 @@
+#include <QSslSocket>
+#include <QCoreApplication>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QDebug>
+
+class HttpsClient : public QObject {
+    Q_OBJECT
+
+public:
+    explicit HttpsClient(const QString& host, quint16 port, QObject* parent = nullptr)
+        : QObject(parent), host(host), port(port) {}
+
+    void sendRequest(const QJsonObject& request) {
+        // Настройка SSL-сокета
+        QSslSocket* sslSocket = new QSslSocket(this);
+
+        connect(sslSocket, &QSslSocket::encrypted, this, [this, sslSocket, request]() {
+            // Сериализуем запрос и отправляем его на сервер
+            QJsonDocument requestDoc(request);
+            sslSocket->write(requestDoc.toJson(QJsonDocument::Compact));
+            sslSocket->flush();
+        });
+
+        connect(sslSocket, &QSslSocket::readyRead, this, [this, sslSocket]() {
+            // Читаем ответ от сервера
+            QByteArray responseData = sslSocket->readAll();
+            QJsonDocument responseDoc = QJsonDocument::fromJson(responseData);
+
+            if (responseDoc.isNull() || !responseDoc.isObject()) {
+                qWarning() << "Invalid response received from server.";
+                return;
+            }
+
+            QJsonObject response = responseDoc.object();
+            qDebug() << "Response from server:" << response;
+            sslSocket->disconnectFromHost();
+        });
+
+        connect(sslSocket, &QSslSocket::disconnected, sslSocket, &QSslSocket::deleteLater);
+
+        connect(sslSocket, QOverload<const QList<QSslError>&>::of(&QSslSocket::sslErrors), this,
+                [sslSocket](const QList<QSslError>& errors) {
+                    qWarning() << "SSL errors occurred:";
+                    for (const QSslError& error : errors) {
+                        qWarning() << error.errorString();
+                    }
+                    sslSocket->ignoreSslErrors();
+                });
+
+        // Подключаемся к серверу
+        sslSocket->connectToHostEncrypted(host, port);
+
+        if (!sslSocket->waitForEncrypted(3000)) {
+            qWarning() << "Failed to establish an encrypted connection:" << sslSocket->errorString();
+        }
+    }
+
+private:
+    QString host;
+    quint16 port;
+};
+
+// Main function
+#include <QCoreApplication>
+
+int main(int argc, char* argv[]) {
+    QCoreApplication app(argc, argv);
+
+    QString host = "127.0.0.1";
+    quint16 port = 8443;
+
+    HttpsClient client(host, port);
+
+    // Пример JSON-запросов
+    QJsonObject pingRequest{{"command", "ping"}};
+    client.sendRequest(pingRequest);
+
+    QJsonObject echoRequest{{"command", "echo"}, {"data", "Hello, HTTPS Server!"}};
+    client.sendRequest(echoRequest);
+
+    return app.exec();
+}
+
+#include "main.moc"
