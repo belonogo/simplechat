@@ -1,81 +1,33 @@
 
-#include <QTcpServer>
-#include <QTcpSocket>
-#include <QJsonDocument>
-#include <QJsonObject>
-#include <QByteArray>
-#include <QDebug>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Test API</title>
+</head>
+<body>
+  <h1>Test HTTP Server</h1>
+  <button id="sendRequest">Send JSON</button>
+  <pre id="response"></pre>
 
-class JsonApiServer : public QTcpServer {
-    Q_OBJECT
-
-public:
-    explicit JsonApiServer(QObject* parent = nullptr) : QTcpServer(parent) {}
-
-protected:
-    void incomingConnection(qintptr socketDescriptor) override {
-        auto clientSocket = new QTcpSocket(this);
-        clientSocket->setSocketDescriptor(socketDescriptor);
-
-        connect(clientSocket, &QTcpSocket::readyRead, this, [this, clientSocket]() {
-            QByteArray requestData = clientSocket->readAll();
-            QJsonDocument requestDoc = QJsonDocument::fromJson(requestData);
-            if (requestDoc.isNull() || !requestDoc.isObject()) {
-                sendError(clientSocket, "Invalid JSON format");
-                return;
-            }
-
-            QJsonObject request = requestDoc.object();
-            QJsonObject response = processRequest(request);
-
-            QJsonDocument responseDoc(response);
-            clientSocket->write(responseDoc.toJson(QJsonDocument::Compact));
+  <script>
+    document.getElementById("sendRequest").addEventListener("click", async () => {
+      const responseElement = document.getElementById("response");
+      try {
+        const response = await fetch("http://localhost:8080", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ message: "Hello, server!" }),
         });
-
-        connect(clientSocket, &QTcpSocket::disconnected, clientSocket, &QTcpSocket::deleteLater);
-    }
-
-private:
-    QJsonObject processRequest(const QJsonObject& request) {
-        QJsonObject response;
-        QString command = request.value("command").toString();
-
-        if (command == "ping") {
-            response["status"] = "ok";
-            response["data"] = "pong";
-        } else if (command == "echo") {
-            response["status"] = "ok";
-            response["data"] = request.value("data");
-        } else {
-            response["status"] = "error";
-            response["message"] = "Unknown command";
-        }
-
-        return response;
-    }
-
-    void sendError(QTcpSocket* socket, const QString& errorMessage) {
-        QJsonObject errorResponse;
-        errorResponse["status"] = "error";
-        errorResponse["message"] = errorMessage;
-
-        QJsonDocument errorDoc(errorResponse);
-        socket->write(errorDoc.toJson(QJsonDocument::Compact));
-    }
-};
-
-// Main function
-#include <QCoreApplication>
-
-int main(int argc, char* argv[]) {
-    QCoreApplication a(argc, argv);
-
-    JsonApiServer server;
-    if (!server.listen(QHostAddress::Any, 12345)) {
-        qCritical() << "Server failed to start:" << server.errorString();
-        return 1;
-    }
-
-    qDebug() << "Server is running on port" << server.serverPort();
-    return a.exec();
-}
+        const data = await response.json();
+        responseElement.textContent = JSON.stringify(data, null, 2);
+      } catch (error) {
+        responseElement.textContent = "Error: " + error.message;
+      }
+    });
+  </script>
+</body>
+</html>
