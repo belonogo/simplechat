@@ -1,150 +1,29 @@
+#ifndef HTTPSERVER_H
+#define HTTPSERVER_H
+
 #include <QTcpServer>
-#include <QSslSocket>
-#include <QSslKey>
-#include <QSslCertificate>
+#include <QTcpSocket>
 #include <QJsonDocument>
 #include <QJsonObject>
-#include <QFile>
-#include <QDebug>
 
-class HttpsServer : public QTcpServer {
+class HttpServer : public QTcpServer {
     Q_OBJECT
-
 public:
-    explicit HttpsServer(QObject* parent = nullptr)
-        : QTcpServer(parent) {}
+    explicit HttpServer(QObject *parent = nullptr);
 
-    bool startServer(const QString& certFile, const QString& keyFile, quint16 port) {
-        // Загружаем сертификат и ключ
-        if (!loadSslConfiguration(certFile, keyFile)) {
-            return false;
-        }
-
-        // Запускаем сервер
-        if (!listen(QHostAddress::Any, port)) {
-            qCritical() << "Failed to start server:" << errorString();
-            return false;
-        }
-
-        qDebug() << "HTTPS server started on port" << port;
-        return true;
-    }
+    // Метод для запуска сервера
+    bool startServer(quint16 port);
 
 protected:
-    void incomingConnection(qintptr socketDescriptor) override {
-        auto sslSocket = new QSslSocket(this);
+    // Вызывается при подключении клиента
+    void incomingConnection(qintptr socketDescriptor) override;
 
-        if (!sslSocket->setSocketDescriptor(socketDescriptor)) {
-            qCritical() << "Failed to set socket descriptor";
-            sslSocket->deleteLater();
-            return;
-        }
-
-        // Устанавливаем SSL-конфигурацию
-        sslSocket->setSslConfiguration(sslConfig);
-
-        // Подключаемся к сигналам для обработки
-        connect(sslSocket, &QSslSocket::encrypted, this, [sslSocket, this]() {
-            connect(sslSocket, &QSslSocket::readyRead, this, [sslSocket, this]() {
-                processRequest(sslSocket);
-            });
-        });
-
-        connect(sslSocket, &QSslSocket::disconnected, sslSocket, &QSslSocket::deleteLater);
-
-        // Начинаем SSL шейк-хенд
-        sslSocket->startServerEncryption();
-    }
+private slots:
+    void handleRequest();
 
 private:
-    QSslConfiguration sslConfig;
-
-    bool loadSslConfiguration(const QString& certFile, const QString& keyFile) {
-        QFile certFileObj(certFile);
-        QFile keyFileObj(keyFile);
-
-        if (!certFileObj.open(QIODevice::ReadOnly)) {
-            qCritical() << "Failed to open certificate file:" << certFile;
-            return false;
-        }
-
-        if (!keyFileObj.open(QIODevice::ReadOnly)) {
-            qCritical() << "Failed to open key file:" << keyFile;
-            return false;
-        }
-
-        QSslCertificate certificate(&certFileObj, QSsl::Pem);
-        QSslKey key(&keyFileObj, QSsl::Rsa, QSsl::Pem);
-
-        certFileObj.close();
-        keyFileObj.close();
-
-        if (certificate.isNull() || key.isNull()) {
-            qCritical() << "Invalid certificate or key";
-            return false;
-        }
-
-        sslConfig.setLocalCertificate(certificate);
-        sslConfig.setPrivateKey(key);
-        sslConfig.setPeerVerifyMode(QSslSocket::VerifyNone);
-
-        return true;
-    }
-
-    void processRequest(QSslSocket* sslSocket) {
-        QByteArray requestData = sslSocket->readAll();
-        QJsonDocument requestDoc = QJsonDocument::fromJson(requestData);
-
-        if (requestDoc.isNull() || !requestDoc.isObject()) {
-            sendError(sslSocket, "Invalid JSON format");
-            return;
-        }
-
-        QJsonObject request = requestDoc.object();
-        QJsonObject response = processJsonRequest(request);
-
-        QJsonDocument responseDoc(response);
-        sslSocket->write(responseDoc.toJson(QJsonDocument::Compact));
-    }
-
-    QJsonObject processJsonRequest(const QJsonObject& request) {
-        QJsonObject response;
-        QString command = request.value("command").toString();
-
-        if (command == "ping") {
-            response["status"] = "ok";
-            response["data"] = "pong";
-        } else if (command == "echo") {
-            response["status"] = "ok";
-            response["data"] = request.value("data");
-        } else {
-            response["status"] = "error";
-            response["message"] = "Unknown command";
-        }
-
-        return response;
-    }
-
-    void sendError(QSslSocket* socket, const QString& errorMessage) {
-        QJsonObject errorResponse;
-        errorResponse["status"] = "error";
-        errorResponse["message"] = errorMessage;
-
-        QJsonDocument errorDoc(errorResponse);
-        socket->write(errorDoc.toJson(QJsonDocument::Compact));
-    }
+    void processJsonRequest(const QByteArray &data, QTcpSocket *client);
+    void sendJsonResponse(const QJsonObject &response, QTcpSocket *client);
 };
 
-// Main function
-#include <QCoreApplication>
-
-int main(int argc, char* argv[]) {
-    QCoreApplication app(argc, argv);
-
-    HttpsServer server;
-    if (!server.startServer("cert.pem", "key.pem", 8443)) {
-        return 1;
-    }
-
-    return app.exec();
-}
+#endif // HTTPSERVER_H
