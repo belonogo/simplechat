@@ -1,0 +1,140 @@
+#include <QTcpServer>
+#include <QTcpSocket>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QDebug>
+
+class HttpServer : public QTcpServer
+{
+    Q_OBJECT
+public:
+    explicit HttpServer(QObject *parent = nullptr) : QTcpServer(parent)
+    {
+        // Запускаем сервер на порту 8080
+        if (!listen(QHostAddress::Any, 8080)) {
+            qCritical() << "Не удалось запустить сервер:" << errorString();
+        } else {
+            qDebug() << "Сервер запущен на порту 8080";
+        }
+    }
+
+protected:
+    void incomingConnection(qintptr socketDescriptor) override
+    {
+        // Создаем новый сокет для каждого входящего соединения
+        QTcpSocket *socket = new QTcpSocket(this);
+        if (socket->setSocketDescriptor(socketDescriptor)) {
+            connect(socket, &QTcpSocket::readyRead, this, &HttpServer::handleRequest);
+            connect(socket, &QTcpSocket::disconnected, socket, &QTcpSocket::deleteLater);
+        } else {
+            delete socket;
+        }
+    }
+
+private slots:
+    void handleRequest()
+    {
+        QTcpSocket *socket = qobject_cast<QTcpSocket *>(sender());
+        if (!socket)
+            return;
+
+        if (!socket->canReadLine())
+            return;
+
+        // Читаем запрос от клиента
+        QByteArray requestData = socket->readAll();
+        QString request(requestData);
+
+        // Разбираем первую строку запроса
+        QStringList requestLines = request.split("\r\n");
+        if (requestLines.isEmpty())
+            return;
+
+        QStringList requestLine = requestLines[0].split(' ');
+        if (requestLine.size() < 3)
+            return;
+
+        QString method = requestLine[0];
+        QString path = requestLine[1];
+        QString httpVersion = requestLine[2];
+
+        // Инициализируем переменные для заголовков и тела
+        QMap<QString, QString> headers;
+        QByteArray body;
+
+        // Разбираем заголовки
+        int i = 1;
+        while (i < requestLines.size() && !requestLines[i].isEmpty()) {
+            QString headerLine = requestLines[i];
+            int colonIndex = headerLine.indexOf(':');
+            if (colonIndex != -1) {
+                QString headerName = headerLine.left(colonIndex).trimmed();
+                QString headerValue = headerLine.mid(colonIndex + 1).trimmed();
+                headers[headerName] = headerValue;
+            }
+            i++;
+        }
+
+        // Проверяем, есть ли тело запроса
+        int contentLength = headers.value("Content-Length", "0").toInt();
+        if (contentLength > 0) {
+            int headerEndIndex = requestData.indexOf("\r\n\r\n");
+            if (headerEndIndex != -1) {
+                body = requestData.mid(headerEndIndex + 4, contentLength);
+            }
+        }
+
+        // Обработка GET запроса
+        if (method == "GET") {
+            // Ваша логика обработки GET запроса
+            QByteArray response = "HTTP/1.1 200 OK\r\n"
+                                  "Content-Type: text/plain\r\n"
+                                  "Content-Length: 13\r\n"
+                                  "\r\n"
+                                  "Hello, world!";
+            socket->write(response);
+            socket->disconnectFromHost();
+        }
+        // Обработка POST запроса
+        else if (method == "POST") {
+            // Парсим JSON из тела запроса
+            QJsonParseError parseError;
+            QJsonDocument jsonDoc = QJsonDocument::fromJson(body, &parseError);
+
+            if (parseError.error != QJsonParseError::NoError) {
+                QByteArray response = "HTTP/1.1 400 Bad Request\r\n"
+                                      "Content-Type: text/plain\r\n"
+                                      "Content-Length: 12\r\n"
+                                      "\r\n"
+                                      "Bad Request";
+                socket->write(response);
+                socket->disconnectFromHost();
+                return;
+            }
+
+            QJsonObject jsonObj = jsonDoc.object();
+            // Ваша логика обработки JSON данных
+            // Например, отправим обратно тот же JSON
+            QByteArray responseBody = QJsonDocument(jsonObj).toJson();
+
+            QByteArray response = "HTTP/1.1 200 OK\r\n";
+            response += "Content-Type: application/json\r\n";
+            response += "Content-Length: " + QByteArray::number(responseBody.size()) + "\r\n";
+            response += "\r\n";
+            response += responseBody;
+
+            socket->write(response);
+            socket->disconnectFromHost();
+        }
+        // Обработка других методов
+        else {
+            QByteArray response = "HTTP/1.1 405 Method Not Allowed\r\n"
+                                  "Content-Type: text/plain\r\n"
+                                  "Content-Length: 18\r\n"
+                                  "\r\n"
+                                  "Method Not Allowed";
+            socket->write(response);
+            socket->disconnectFromHost();
+        }
+    }
+};
