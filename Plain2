@@ -1,0 +1,179 @@
+Ниже приведён пример, в котором мы не передаём текст в конструктор, а используем переопределение `setPlainText()` для установки полного текста. При установке текста через `setPlainText()` мы сохраняем его во внутренней переменной `fullText`, после чего вызываем перерасчёт построчной разбивки и обновление отображения. Таким образом, вы можете использовать этот класс как обычный `QPlainTextEdit`, устанавливая текст динамически, а класс самостоятельно будет решать, как его визуализировать.
+
+### Заголовочный файл: `lazyplaintextviewer.h`
+
+```cpp
+#ifndef LAZYPLAINTEXTVIEWER_H
+#define LAZYPLAINTEXTVIEWER_H
+
+#include <QPlainTextEdit>
+#include <QStringList>
+
+class LazyPlainTextViewer : public QPlainTextEdit
+{
+    Q_OBJECT
+public:
+    explicit LazyPlainTextViewer(QWidget *parent = nullptr);
+
+    void setPlainText(const QString &text) override;
+
+protected:
+    void resizeEvent(QResizeEvent *event) override;
+
+private slots:
+    void updateVisibleText();
+
+private:
+    void recalculateLinesForWrapping();
+
+    QString fullText;
+    QStringList fullLines;
+};
+
+#endif // LAZYPLAINTEXTVIEWER_H
+```
+
+### Файл реализации: `lazyplaintextviewer.cpp`
+
+```cpp
+#include "lazyplaintextviewer.h"
+
+#include <QScrollBar>
+#include <QFontMetrics>
+#include <QResizeEvent>
+
+LazyPlainTextViewer::LazyPlainTextViewer(QWidget *parent)
+    : QPlainTextEdit(parent)
+{
+    setReadOnly(true);
+    setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOn);
+
+    connect(verticalScrollBar(), &QScrollBar::valueChanged,
+            this, &LazyPlainTextViewer::updateVisibleText);
+    connect(this, &QPlainTextEdit::textChanged,
+            this, &LazyPlainTextViewer::updateVisibleText);
+    connect(verticalScrollBar(), &QAbstractSlider::rangeChanged,
+            this, &LazyPlainTextViewer::updateVisibleText);
+}
+
+void LazyPlainTextViewer::setPlainText(const QString &text)
+{
+    fullText = text;
+    recalculateLinesForWrapping();
+    updateVisibleText();
+}
+
+void LazyPlainTextViewer::resizeEvent(QResizeEvent *event)
+{
+    QPlainTextEdit::resizeEvent(event);
+    // При изменении размера окна пересчитываем строки, т.к. ширина изменилась
+    recalculateLinesForWrapping();
+    updateVisibleText();
+}
+
+void LazyPlainTextViewer::recalculateLinesForWrapping()
+{
+    fullLines.clear();
+
+    QFontMetrics fm(font());
+    int maxWidth = viewport()->width();
+
+    if (maxWidth <= 0) {
+        // Если по какой-то причине ширина <= 0, сохраняем весь текст в одной строке
+        fullLines << fullText;
+        return;
+    }
+
+    int start = 0;
+    while (start < fullText.length()) {
+        int prevLen = 0;
+        int currentLen = 1;
+        while (start + currentLen <= fullText.length()) {
+            QString sub = fullText.mid(start, currentLen);
+            if (fm.horizontalAdvance(sub) > maxWidth) {
+                break;
+            }
+            prevLen = currentLen;
+            currentLen++;
+        }
+
+        if (prevLen == 0) {
+            // Если ни один символ не помещается (очень узкий виджет или огромный символ)
+            prevLen = 1;
+        }
+
+        fullLines << fullText.mid(start, prevLen);
+        start += prevLen;
+    }
+
+    if (fullLines.isEmpty()) {
+        fullLines << "";
+    }
+}
+
+void LazyPlainTextViewer::updateVisibleText()
+{
+    QFontMetrics fm(font());
+    int lineHeight = fm.lineSpacing();
+    int viewportHeight = viewport()->height();
+
+    int visibleLinesCount = viewportHeight / lineHeight;
+    if (visibleLinesCount < 1) visibleLinesCount = 1;
+
+    verticalScrollBar()->setRange(0, qMax(0, fullLines.size() - visibleLinesCount));
+
+    int startLine = verticalScrollBar()->value();
+    if (startLine < 0) startLine = 0;
+    if (startLine + visibleLinesCount > fullLines.size())
+        visibleLinesCount = fullLines.size() - startLine;
+
+    QString newText;
+    if (visibleLinesCount > 0) {
+        QStringList visibleSubset = fullLines.mid(startLine, visibleLinesCount);
+        newText = visibleSubset.join("\n");
+    }
+
+    // Отключаем сигнал временно, чтобы не вызвать updateVisibleText() рекурсивно
+    disconnect(this, &QPlainTextEdit::textChanged, this, &LazyPlainTextViewer::updateVisibleText);
+    QPlainTextEdit::setPlainText(newText);
+    connect(this, &QPlainTextEdit::textChanged, this, &LazyPlainTextViewer::updateVisibleText);
+}
+```
+
+### Пример `main.cpp`
+
+```cpp
+#include <QApplication>
+#include <QWidget>
+#include <QVBoxLayout>
+#include "lazyplaintextviewer.h"
+
+int main(int argc, char *argv[])
+{
+    QApplication app(argc, argv);
+
+    QWidget mainWidget;
+    QVBoxLayout layout(&mainWidget);
+
+    LazyPlainTextViewer *viewer = new LazyPlainTextViewer;
+    layout.addWidget(viewer);
+
+    mainWidget.resize(400, 300);
+    mainWidget.show();
+
+    // Теперь можно в любой момент установить текст:
+    QString bigText;
+    for (int i = 0; i < 10000; ++i) {
+        bigText += QString("LongWordNumber%1 ").arg(i);
+    }
+    viewer->setPlainText(bigText);
+
+    return app.exec();
+}
+```
+
+В данном примере:
+
+- Используется стандартный метод `setPlainText()`, который мы переопределяем.  
+- При вызове `setPlainText()` внутри класса мы фактически сохраняем текст во внутренней переменной `fullText`, разбиваем его на строки, а затем отображаем только ту часть, что помещается во вьюпорт.  
+- При изменении размера виджета строки пересчитываются заново (для новой ширины).
