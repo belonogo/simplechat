@@ -1,0 +1,261 @@
+Ниже приведён пример, как можно распараллелить загрузку и разбиение огромного текста на строки, разделив исходный текст на несколько кусков и обрабатывая каждый кусок в отдельном потоке. Предположим, что у нас есть один большой текст `fullText`, и мы хотим разбить его, скажем, на части по 100000 символов (или по количеству символов, которое вы укажете), а затем для каждой части выполнить разбиение на строки в отдельном потоке. После завершения работы всех потоков мы объединим результаты и обновим отображение.
+
+**Основная идея:**
+
+1. Делим `fullText` на чанки (например, по 100000 символов).
+2. Для каждого чанка запускаем асинхронную задачу (через `QtConcurrent::mappedReduced` или просто собираем `QList<Chunk>` и применяем `QtConcurrent::map`/`mapped`).
+3. Каждая задача разбивает свой чанк на строки в зависимости от ширины.
+4. После завершения всех задач мы объединяем результаты в один список строк `fullLines`.
+5. Вызываем `updateVisibleText()` для обновления отображения.
+
+Для этого примера будет использоваться `QtConcurrent::mappedReduced`, которая применяет функцию к каждому элементу контейнера в отдельном потоке (по возможности) и затем сводит результаты с помощью функции редукции.
+
+**Необходимые изменения в коде:**
+
+- Добавим метод `startRecalculateLinesParallel()` вместо простого `startRecalculateLines()`. Этот метод разобьёт текст на чанки и запустит параллельную обработку.
+- Используем `QFutureWatcher` для отслеживания завершения параллельной обработки.
+- По завершении параллельной операции мы получаем объединённый список строк.
+
+### lazyplaintextviewer.h
+
+```cpp
+#ifndef LAZYPLAINTEXTVIEWER_H
+#define LAZYPLAINTEXTVIEWER_H
+
+#include <QPlainTextEdit>
+#include <QStringList>
+#include <QFutureWatcher>
+
+class LazyPlainTextViewer : public QPlainTextEdit
+{
+    Q_OBJECT
+public:
+    explicit LazyPlainTextViewer(QWidget *parent = nullptr);
+
+    void setFullText(const QString &text);
+
+protected:
+    void resizeEvent(QResizeEvent *event) override;
+
+private slots:
+    void updateVisibleText();
+    void onRecalculateFinished();
+
+private:
+    // Структура для передачи данных о чанках
+    struct TextChunk {
+        QString text;
+    };
+
+    static QStringList processChunk(const TextChunk &chunk, const QFont &font, int maxWidth);
+
+    void startRecalculateLinesParallel();
+
+    QString fullText;
+    QStringList fullLines;
+
+    QFutureWatcher<QStringList> watcher;
+
+    int chunkSize = 100000; // размер чанка, можно изменить по необходимости
+};
+
+#endif // LAZYPLAINTEXTVIEWER_H
+```
+
+### lazyplaintextviewer.cpp
+
+```cpp
+#include "lazyplaintextviewer.h"
+#include <QScrollBar>
+#include <QFontMetrics>
+#include <QResizeEvent>
+#include <QtConcurrent>
+
+LazyPlainTextViewer::LazyPlainTextViewer(QWidget *parent)
+    : QPlainTextEdit(parent)
+{
+    setReadOnly(true);
+    setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOn);
+
+    connect(verticalScrollBar(), &QScrollBar::valueChanged,
+            this, &LazyPlainTextViewer::updateVisibleText);
+    connect(this, &QPlainTextEdit::textChanged,
+            this, &LazyPlainTextViewer::updateVisibleText);
+    connect(verticalScrollBar(), &QAbstractSlider::rangeChanged,
+            this, &LazyPlainTextViewer::updateVisibleText);
+
+    connect(&watcher, &QFutureWatcher<QStringList>::finished,
+            this, &LazyPlainTextViewer::onRecalculateFinished);
+}
+
+void LazyPlainTextViewer::setFullText(const QString &text)
+{
+    fullText = text;
+    startRecalculateLinesParallel();
+}
+
+void LazyPlainTextViewer::resizeEvent(QResizeEvent *event)
+{
+    QPlainTextEdit::resizeEvent(event);
+    // При изменении размера пересчитаем построчное разбиение
+    startRecalculateLinesParallel();
+}
+
+void LazyPlainTextViewer::updateVisibleText()
+{
+    if (fullLines.isEmpty()) return;
+
+    QFontMetrics fm(font());
+    int lineHeight = fm.lineSpacing();
+    int viewportHeight = viewport()->height();
+
+    int visibleLinesCount = viewportHeight / lineHeight;
+    if (visibleLinesCount < 1) visibleLinesCount = 1;
+
+    verticalScrollBar()->setRange(0, qMax(0, fullLines.size() - visibleLinesCount));
+
+    int startLine = verticalScrollBar()->value();
+    if (startLine < 0) startLine = 0;
+    if (startLine + visibleLinesCount > fullLines.size())
+        visibleLinesCount = fullLines.size() - startLine;
+
+    QString newText;
+    if (visibleLinesCount > 0) {
+        QStringList visibleSubset = fullLines.mid(startLine, visibleLinesCount);
+        newText = visibleSubset.join("\n");
+    }
+
+    disconnect(this, &QPlainTextEdit::textChanged, this, &LazyPlainTextViewer::updateVisibleText);
+    QPlainTextEdit::setPlainText(newText);
+    connect(this, &QPlainTextEdit::textChanged, this, &LazyPlainTextViewer::updateVisibleText);
+}
+
+void LazyPlainTextViewer::onRecalculateFinished()
+{
+    // Получаем результат
+    fullLines = watcher.result();
+    updateVisibleText();
+}
+
+// Статический метод для обработки одного чанка
+QStringList LazyPlainTextViewer::processChunk(const TextChunk &chunk, const QFont &font, int maxWidth)
+{
+    QStringList lines;
+    if (chunk.text.isEmpty()) {
+        lines << "";
+        return lines;
+    }
+
+    QFontMetrics fm(font);
+    int start = 0;
+    const QString &text = chunk.text;
+
+    while (start < text.length()) {
+        int prevLen = 0;
+        int currentLen = 1;
+        while (start + currentLen <= text.length()) {
+            QString sub = text.mid(start, currentLen);
+            if (fm.horizontalAdvance(sub) > maxWidth) {
+                break;
+            }
+            prevLen = currentLen;
+            currentLen++;
+        }
+
+        if (prevLen == 0) {
+            // Если даже один символ не помещается
+            prevLen = 1;
+        }
+
+        lines << text.mid(start, prevLen);
+        start += prevLen;
+    }
+
+    if (lines.isEmpty()) {
+        lines << "";
+    }
+    return lines;
+}
+
+void LazyPlainTextViewer::startRecalculateLinesParallel()
+{
+    int maxWidth = viewport()->width();
+    QFont currentFont = font();
+    QString currentFullText = fullText;
+
+    // Разбиваем текст на чанки
+    QList<TextChunk> chunks;
+    int length = currentFullText.length();
+    for (int start = 0; start < length; start += chunkSize) {
+        int end = qMin(start + chunkSize, length);
+        TextChunk c;
+        c.text = currentFullText.mid(start, end - start);
+        chunks.append(c);
+    }
+
+    // Если нет чанков (например, пустой текст), добавляем пустую строку
+    if (chunks.isEmpty()) {
+        chunks.append(TextChunk{""});
+    }
+
+    // Запускаем параллельную обработку
+    // mappedFunction - для каждого чанка вызываем processChunk
+    // reducedFunction - объединяем результаты воедино
+    auto mappedFunction = [currentFont, maxWidth](const TextChunk &chunk) {
+        return processChunk(chunk, currentFont, maxWidth);
+    };
+
+    auto reducedFunction = [](QStringList &result, const QStringList &intermediate) {
+        // Просто дописываем строки к результату
+        result.append(intermediate);
+    };
+
+    QFuture<QStringList> future = QtConcurrent::mappedReduced(chunks, mappedFunction, reducedFunction, QtConcurrent::OrderedReduce);
+    watcher.setFuture(future);
+}
+```
+
+### main.cpp
+
+```cpp
+#include <QApplication>
+#include <QWidget>
+#include <QVBoxLayout>
+#include "lazyplaintextviewer.h"
+
+int main(int argc, char *argv[])
+{
+    QApplication app(argc, argv);
+
+    QWidget mainWidget;
+    QVBoxLayout layout(&mainWidget);
+
+    LazyPlainTextViewer *viewer = new LazyPlainTextViewer;
+    layout.addWidget(viewer);
+
+    mainWidget.resize(400, 300);
+    mainWidget.show();
+
+    // Очень большой текст
+    QString bigText;
+    for (int i = 0; i < 1000000; ++i) {
+        bigText += QString("LongWordNumber%1 ").arg(i);
+    }
+
+    viewer->setFullText(bigText);
+
+    return app.exec();
+}
+```
+
+**Что делает этот код:**
+
+- При установке текста или изменении размера окна вызывается `startRecalculateLinesParallel()`.
+- Текст разбивается на куски размером `chunkSize` символов (100000 в примере).
+- Для каждого кусочка запускается параллельная обработка с помощью `QtConcurrent::mappedReduced`.
+  - `mappedFunction` обрабатывает один чанк и возвращает список строк.
+  - `reducedFunction` объединяет все списки строк в один общий список.
+- По завершении всех потоков вызывается `onRecalculateFinished()`, которая забирает результат и вызывает `updateVisibleText()`.
+- Таким образом, огромный текст будет разбит на строки параллельно, а UI-поток не будет заблокирован.
+
+Вы можете настроить размер чанков, добавить индикатор прогресса или отмену, если потребуется.
