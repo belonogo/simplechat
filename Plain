@@ -1,0 +1,189 @@
+Ниже приведён пример кода, в котором один большой текст (без переводов строк или с ними — не важно) разбивается на строки динамически в зависимости от текущей ширины области отображения в `QPlainTextEdit`. При изменении размера окна перерасчёт происходит заново, и отображается только та часть текста, которая умещается в текущий видимый регион.
+
+Основная идея:
+
+1. Хранить весь текст в переменной `fullText`.
+2. При изменении размеров или начальной инициализации разбивать этот текст на строки так, чтобы каждая строка помещалась по ширине вьюпорта `QPlainTextEdit`.
+3. Отображать только видимый фрагмент, определяемый значением вертикального скролла.
+
+Обратите внимание:  
+- Перерасчёт при каждом изменении размера может быть затратным для очень больших текстов. Возможно, стоит делать это асинхронно или кешировать результаты.
+- В примере используется простой линейный проход для определения длины строки. Можно использовать более эффективные методы (например, бинарный поиск), если текст очень большой.
+- При работе со шрифтами учитывайте метрики, чтобы корректно определять, поместится ли подстрока.
+
+### Заголовочный файл: `lazyplaintextviewer.h`
+
+```cpp
+#ifndef LAZYPLAINTEXTVIEWER_H
+#define LAZYPLAINTEXTVIEWER_H
+
+#include <QPlainTextEdit>
+#include <QStringList>
+
+class LazyPlainTextViewer : public QPlainTextEdit
+{
+    Q_OBJECT
+public:
+    explicit LazyPlainTextViewer(const QString &fullText, QWidget *parent = nullptr);
+
+protected:
+    void resizeEvent(QResizeEvent *event) override;
+
+private slots:
+    void updateVisibleText();
+
+private:
+    void recalculateLinesForWrapping();
+
+    QString fullText;
+    QStringList fullLines;
+};
+
+#endif // LAZYPLAINTEXTVIEWER_H
+```
+
+### Файл реализации: `lazyplaintextviewer.cpp`
+
+```cpp
+#include "lazyplaintextviewer.h"
+
+#include <QScrollBar>
+#include <QFontMetrics>
+#include <QResizeEvent>
+
+LazyPlainTextViewer::LazyPlainTextViewer(const QString &text, QWidget *parent)
+    : QPlainTextEdit(parent), fullText(text)
+{
+    setReadOnly(true);
+    setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOn);
+
+    connect(verticalScrollBar(), &QScrollBar::valueChanged,
+            this, &LazyPlainTextViewer::updateVisibleText);
+    connect(this, &QPlainTextEdit::textChanged,
+            this, &LazyPlainTextViewer::updateVisibleText);
+    connect(verticalScrollBar(), &QAbstractSlider::rangeChanged,
+            this, &LazyPlainTextViewer::updateVisibleText);
+
+    // Выполним первичную разбивку после того, как виджет будет отображён.
+    // Можно использовать singleShot или просто вызвать при старте, но 
+    // для корректной работы дождёмся первого resizeEvent.
+}
+
+void LazyPlainTextViewer::resizeEvent(QResizeEvent *event)
+{
+    QPlainTextEdit::resizeEvent(event);
+    recalculateLinesForWrapping();
+    updateVisibleText();
+}
+
+void LazyPlainTextViewer::recalculateLinesForWrapping()
+{
+    fullLines.clear();
+
+    QFontMetrics fm(font());
+    int maxWidth = viewport()->width();
+
+    if (maxWidth <= 0) {
+        // Если по какой-то причине ширина <= 0, просто не делаем разбивку.
+        fullLines << fullText;
+        return;
+    }
+
+    // Разбиваем fullText на строки по ширине
+    // Перебираем текст посимвольно и определяем максимально возможную длину строки.
+    int start = 0;
+    while (start < fullText.length()) {
+        int len = 1;
+        int prevLen = 0;
+        // Линейный поиск максимально умещающейся подстроки
+        // Можно оптимизировать бинарным поиском, если текст очень большой.
+        while (start + len <= fullText.length()) {
+            QString sub = fullText.mid(start, len);
+            if (fm.horizontalAdvance(sub) > maxWidth) {
+                // Если не помещается - берем предыдущую длину
+                break;
+            }
+            prevLen = len;
+            len++;
+        }
+        if (prevLen == 0) {
+            // Даже один символ не влез (редкий случай, очень узкое поле или очень большой шрифт)
+            // Вставляем хотя бы один символ, чтобы избежать бесконечного цикла.
+            prevLen = 1;
+        }
+
+        fullLines << fullText.mid(start, prevLen);
+        start += prevLen;
+    }
+
+    if (fullLines.isEmpty()) {
+        // Если текст пустой
+        fullLines << "";
+    }
+}
+
+void LazyPlainTextViewer::updateVisibleText()
+{
+    QFontMetrics fm(font());
+    int lineHeight = fm.lineSpacing();
+    int viewportHeight = viewport()->height();
+
+    int visibleLinesCount = viewportHeight / lineHeight;
+    if (visibleLinesCount < 1) visibleLinesCount = 1;
+
+    verticalScrollBar()->setRange(0, qMax(0, fullLines.size() - visibleLinesCount));
+
+    int startLine = verticalScrollBar()->value();
+    if (startLine < 0) startLine = 0;
+    if (startLine + visibleLinesCount > fullLines.size())
+        visibleLinesCount = fullLines.size() - startLine;
+
+    QString newText;
+    if (visibleLinesCount > 0) {
+        QStringList visibleSubset = fullLines.mid(startLine, visibleLinesCount);
+        newText = visibleSubset.join("\n");
+    }
+
+    if (newText != toPlainText()) {
+        disconnect(this, &QPlainTextEdit::textChanged, this, &LazyPlainTextViewer::updateVisibleText);
+        setPlainText(newText);
+        connect(this, &QPlainTextEdit::textChanged, this, &LazyPlainTextViewer::updateVisibleText);
+    }
+}
+```
+
+### Пример `main.cpp`
+
+```cpp
+#include <QApplication>
+#include <QWidget>
+#include <QVBoxLayout>
+#include "lazyplaintextviewer.h"
+
+int main(int argc, char *argv[])
+{
+    QApplication app(argc, argv);
+
+    // Предположим, что у нас есть большой текст без переводов строк
+    QString bigText;
+    for (int i = 0; i < 10000; ++i) {
+        bigText += QString("ThisIsAQuiteLongWordNumber%1").arg(i);
+        bigText += " "; // Пробелы для разделения слов
+    }
+
+    QWidget mainWidget;
+    QVBoxLayout layout(&mainWidget);
+
+    LazyPlainTextViewer *viewer = new LazyPlainTextViewer(bigText);
+    layout.addWidget(viewer);
+
+    mainWidget.resize(400, 300);
+    mainWidget.show();
+
+    return app.exec();
+}
+```
+
+---
+
+Таким образом, при каждом изменении размера виджета текст будет переподготавливаться (разбиваться по новой ширине), а затем обновляться отображение видимого фрагмента.
