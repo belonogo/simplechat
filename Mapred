@@ -1,0 +1,70 @@
+Эта ошибка возникает из-за того, что шаблонная функция `QtConcurrent::mappedReduced` не может корректно вывести типы шаблонов из переданных лямбда-функций и аргументов. Когда используются лямбда-выражения, `QtConcurrent` иногда не может корректно вывести тип результата или параметры. Кроме того, стоит явно указать тип итогового результата при вызове `mappedReduced`.  
+
+Основные рекомендации для решения проблемы:  
+1. **Явно указать тип результата**  
+   Вместо простого `QtConcurrent::mappedReduced(chunks, mappedFunction, reducedFunction, ...)` используйте:  
+   ```cpp
+   QFuture<QStringList> future = QtConcurrent::mappedReduced<QStringList>(
+       chunks, mappedFunction, reducedFunction, QtConcurrent::OrderedReduce);
+   ```
+
+2. **Явно указать возвращаемый тип лямбды для mapFunction**  
+   Когда вы определяете лямбда-функции, укажите явно возвращаемый тип:  
+   ```cpp
+   auto mappedFunction = [currentFont, maxWidth](const TextChunk &chunk) -> QStringList {
+       return processChunk(chunk, currentFont, maxWidth);
+   };
+   ```
+   
+   Аналогично, для reduceFunction тип аргументов должен чётко соответствовать `void reduceFunction(ResultType &accumulator, const ResultType &intermediate)`. В нашем случае `ResultType` — это `QStringList`:
+   ```cpp
+   auto reducedFunction = [](QStringList &result, const QStringList &intermediate) {
+       result.append(intermediate);
+   };
+   ```
+
+3. **Использовать статические функции вместо лямбд**  
+   Если лямбды вызывают сложности с выведением типов, можно определить функции явно:
+   ```cpp
+   static QStringList mapFunctionHelper(const TextChunk &chunk, const QFont &font, int maxWidth) {
+       return processChunk(chunk, font, maxWidth);
+   }
+
+   static void reduceFunctionHelper(QStringList &result, const QStringList &intermediate) {
+       result.append(intermediate);
+   }
+   ```
+   
+   И вызвать:
+   ```cpp
+   QFuture<QStringList> future = QtConcurrent::mappedReduced<QStringList>(
+       chunks,
+       [currentFont, maxWidth](const TextChunk &c) {
+           return mapFunctionHelper(c, currentFont, maxWidth);
+       },
+       reduceFunctionHelper,
+       QtConcurrent::OrderedReduce
+   );
+   ```
+
+4. **Убедиться, что подключены все необходимые заголовки и модули**  
+   В `.pro` файле должно быть:
+   ```pro
+   QT += core gui widgets concurrent
+   ```
+   
+   В коде:
+   ```cpp
+   #include <QtConcurrent>
+   #include <QFuture>
+   #include <QFutureWatcher>
+   #include <QStringList>
+   ```
+
+5. **Указать шаблонные параметры для контейнера** (обычно не требуется, но если всё ещё проблемы):  
+   ```cpp
+   QFuture<QStringList> future = QtConcurrent::mappedReduced<QStringList, QList<TextChunk>>(
+       chunks, mappedFunction, reducedFunction, QtConcurrent::OrderedReduce);
+   ```
+
+Обычно достаточно явного указания результирующего типа `QStringList` в `mappedReduced`, а также чёткого указания возвращаемого типа для лямбды mapFunction. Если это не помогает — используйте статические функции вместо лямбда-выражений.
