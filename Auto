@@ -1,0 +1,33 @@
+void HexView::mouseMoveEvent(QMouseEvent* event)
+{
+    if (m_selecting) {
+        // 1. Проверяем, нужно ли автоскроллить:
+        const int margin = 20; // пиксели от нижней/верхней границы
+        int yPos = event->pos().y();
+
+        // Если курсор слишком близко к нижней границе виджета — скроллим вниз
+        if (yPos > viewport()->height() - margin) {
+            int newValue = verticalScrollBar()->value() + 1;
+            if (newValue <= verticalScrollBar()->maximum()) {
+                verticalScrollBar()->setValue(newValue);
+            }
+        }
+        // Если курсор слишком близко к верхней границе — скроллим вверх
+        else if (yPos < margin) {
+            int newValue = verticalScrollBar()->value() - 1;
+            if (newValue >= verticalScrollBar()->minimum()) {
+                verticalScrollBar()->setValue(newValue);
+            }
+        }
+
+        // 2. Обновляем конечную точку выделения
+        int offset = pointToByteOffset(event->pos());
+        m_selectionEnd = offset;
+
+        // 3. Перерисовываем, чтобы увидеть выделение
+        viewport()->update();
+    }
+
+    // Не забываем вызвать родительскую реализацию
+    QAbstractScrollArea::mouseMoveEvent(event);
+}
