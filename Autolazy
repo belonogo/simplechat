@@ -1,0 +1,398 @@
+Ниже приведён расширенный пример `HexView` с **отображением номеров строк** (слева) и «ленивой» прокруткой самого Hex-дампа (справа). При этом:
+
+1. **Линейные номера** не попадают в копирование. Мы, как и прежде, копируем только содержимое Hex (см. реализацию выделения/копирования), потому что вычисление выделения идёт по смещённой координате (учитываем, что слева есть отступ под номера).
+
+2. **Номера строк** удобно рисовать в «левом поле» (margin). Для этого мы:
+   - резервируем некоторое количество пикселей слева (например, `m_lineNumberWidth`).
+   - рисуем номера строк в этом «поле», а сам дамп начинаем от точки `x = m_lineNumberWidth`.
+
+3. Нужно учесть, что координаты для вычисления, какой байт выделен (функция `pointToByteOffset`) тоже должны быть сдвинуты на `m_lineNumberWidth`, чтобы клик на номере строки не влиял на выделение.
+
+---
+
+## Заголовочный файл (HexView.h)
+
+```cpp
+#pragma once
+
+#include <QAbstractScrollArea>
+#include <QByteArray>
+#include <QScrollBar>
+#include <QPainter>
+#include <QFontMetrics>
+#include <QMouseEvent>
+#include <QClipboard>
+#include <QGuiApplication>
+#include <QShortcut>
+
+class HexView : public QAbstractScrollArea
+{
+    Q_OBJECT
+public:
+    explicit HexView(QWidget* parent = nullptr);
+    ~HexView() override = default;
+
+    // Задаём (или обновляем) данные
+    void setData(const QByteArray& data);
+
+    // Возвращаем выбранный диапазон в виде Hex-строки (если надо извне)
+    QString selectedHex() const;
+
+public slots:
+    // Слот для копирования выделенного в буфер обмена (Ctrl+C и пр.)
+    void copySelection();
+
+    // Можно перегрузить sizeHint(), если нужно
+    QSize sizeHint() const override;
+
+protected:
+    // Основные события
+    void paintEvent(QPaintEvent* event) override;
+    void mousePressEvent(QMouseEvent* event) override;
+    void mouseMoveEvent(QMouseEvent* event) override;
+    void mouseReleaseEvent(QMouseEvent* event) override;
+
+private:
+    // Данные
+    QByteArray m_data;
+
+    // Кол-во байт в одной строке
+    static const int BYTES_PER_LINE = 16;
+
+    // Геометрия шрифта и строк
+    int m_lineHeight     = 0;
+    int m_charWidth      = 0; 
+    int m_lineNumberWidth = 0; // ширина поля для отображения номера строки
+    int m_hexAreaWidth   = 0;  // ширина для Hex (без учёта lineNumberWidth)
+
+    // Параметры выделения
+    bool m_selecting       = false; 
+    int  m_selectionStart  = -1;    
+    int  m_selectionEnd    = -1;    
+
+    // Подсчёт общего количества строк
+    int totalLineCount() const;
+
+    // Преобразование байта в 2 hex-цифры
+    QString byteToHex(unsigned char c) const;
+
+    // Перевод координат курсора в индекс байта (offset в m_data)
+    int pointToByteOffset(const QPoint& pos) const;
+
+    // Вычисляет прямоугольник, в котором рисуется байт `byteIndex`
+    QRect byteRect(int byteIndex, int lineIndex) const;
+
+    // Настраиваем скроллбар (range, step, etc.)
+    void updateScrollBar();
+
+    // Нормализовать (start, end), чтобы start <= end
+    void normalizeSelection(int &start, int &end) const;
+
+    // Утилита для рисования номера строки
+    void drawLineNumber(QPainter &painter, int lineIndex, int yPos, const QFontMetrics &fm);
+
+};
+```
+
+---
+
+## Исходник (HexView.cpp)
+
+```cpp
+#include "HexView.h"
+
+HexView::HexView(QWidget* parent)
+    : QAbstractScrollArea(parent)
+{
+    // Моноширинный шрифт
+    QFont font("Courier");
+    font.setStyleHint(QFont::TypeWriter);
+    setFont(font);
+
+    QFontMetrics fm(font);
+    m_lineHeight = fm.height();
+    m_charWidth  = fm.averageCharWidth();
+
+    // Для 16 байт: "00 " (3 символа) * 16 = 48 символов в одной строке Hex.
+    m_hexAreaWidth = 48 * m_charWidth; 
+
+    // Прикинем, сколько строк может быть. Чтобы понять, сколько цифр 
+    // нужно на номер строки, по-хорошему, нужно знать максимальное число строк.
+    // Для упрощения можно взять «запас»: например, 6-7 знаков.
+    // Или вычислять динамически в setData(). Сделаем пока статично:
+    int maxLineDigits = 6; 
+    m_lineNumberWidth = maxLineDigits * m_charWidth + 10; 
+    // +10 — небольшой отступ, чтобы текст не прилипал к Hex.
+
+    // Shortcut на копирование
+    auto copyShortcut = new QShortcut(QKeySequence::Copy, this);
+    connect(copyShortcut, &QShortcut::activated, this, &HexView::copySelection);
+}
+
+void HexView::setData(const QByteArray& data)
+{
+    m_data = data;
+    m_selectionStart = -1;
+    m_selectionEnd   = -1;
+
+    updateScrollBar();
+    viewport()->update();
+}
+
+QSize HexView::sizeHint() const
+{
+    // Примерная ширина = ширина поля номера + ширина Hex-области
+    // Высота ~ 25 строк
+    int w = m_lineNumberWidth + m_hexAreaWidth;
+    int h = m_lineHeight * 25;
+    return QSize(w, h);
+}
+
+void HexView::paintEvent(QPaintEvent* /*event*/)
+{
+    QPainter painter(viewport());
+    painter.setFont(font());
+
+    QFontMetrics fm(painter.font());
+
+    // Первая видимая строка
+    int firstVisibleLine = verticalScrollBar()->value();
+    // Сколько строк умещается?
+    int linesPerPage = viewport()->height() / m_lineHeight;
+
+    // Нормализованные границы выделения
+    int selStart, selEnd;
+    normalizeSelection(selStart, selEnd);
+
+    for (int line = 0; line < linesPerPage; ++line) {
+        int lineIndex = firstVisibleLine + line;
+        if (lineIndex >= totalLineCount()) {
+            break;
+        }
+        int y = line * m_lineHeight;
+
+        // ---- (1) Рисуем номер строки слева ----
+        drawLineNumber(painter, lineIndex, y, fm);
+
+        // ---- (2) Рисуем Hex-данные ----
+        int byteStart = lineIndex * BYTES_PER_LINE;
+        int byteEnd   = qMin(byteStart + BYTES_PER_LINE, m_data.size());
+
+        // Для рисования Hex сдвигаемся вправо на m_lineNumberWidth
+        // но можно и просто использовать byteRect() с учётом этого отступа
+        for (int b = byteStart; b < byteEnd; ++b) {
+            bool inSelection = (selStart >= 0 && selEnd >= 0 &&
+                                b >= selStart && b < selEnd);
+
+            // Координаты байта
+            QRect r = byteRect(b, lineIndex);
+
+            if (inSelection) {
+                painter.fillRect(r, QBrush(QColor("#3399FF"))); 
+                painter.setPen(Qt::white);
+            } else {
+                painter.setPen(Qt::black);
+            }
+
+            QString hexPart = byteToHex(static_cast<unsigned char>(m_data[b])) + " ";
+            // Чтобы нарисовать текст «по baseline», можно y+fm.ascent()
+            painter.drawText(r.left(), r.top() + fm.ascent(), hexPart);
+        }
+    }
+}
+
+void HexView::mousePressEvent(QMouseEvent* event)
+{
+    if (event->button() == Qt::LeftButton) {
+        m_selecting = true;
+        int offset = pointToByteOffset(event->pos());
+        m_selectionStart = offset;
+        m_selectionEnd   = offset;
+        viewport()->update();
+    }
+    QAbstractScrollArea::mousePressEvent(event);
+}
+
+void HexView::mouseMoveEvent(QMouseEvent* event)
+{
+    if (m_selecting) {
+        // (Автоскролл — см. предыдущие ответы, если нужно)
+        int offset = pointToByteOffset(event->pos());
+        m_selectionEnd = offset;
+        viewport()->update();
+    }
+    QAbstractScrollArea::mouseMoveEvent(event);
+}
+
+void HexView::mouseReleaseEvent(QMouseEvent* event)
+{
+    if (event->button() == Qt::LeftButton) {
+        m_selecting = false;
+        int offset = pointToByteOffset(event->pos());
+        m_selectionEnd = offset;
+        viewport()->update();
+    }
+    QAbstractScrollArea::mouseReleaseEvent(event);
+}
+
+QString HexView::selectedHex() const
+{
+    int selStart, selEnd;
+    normalizeSelection(selStart, selEnd);
+    if (selStart < 0 || selEnd < 0 || selStart >= selEnd) {
+        return QString();
+    }
+    QByteArray chunk = m_data.mid(selStart, selEnd - selStart);
+
+    QString hexResult;
+    for (unsigned char c : chunk) {
+        hexResult += byteToHex(c) + ' ';
+    }
+    return hexResult.trimmed();
+}
+
+void HexView::copySelection()
+{
+    QString hexStr = selectedHex();
+    if (!hexStr.isEmpty()) {
+        QClipboard* clipboard = QGuiApplication::clipboard();
+        clipboard->setText(hexStr);
+    }
+}
+
+int HexView::totalLineCount() const
+{
+    if (m_data.isEmpty()) {
+        return 0;
+    }
+    return (m_data.size() + BYTES_PER_LINE - 1) / BYTES_PER_LINE;
+}
+
+QString HexView::byteToHex(unsigned char c) const
+{
+    return QString("%1").arg(c, 2, 16, QLatin1Char('0')).toUpper();
+}
+
+// Перевод координат курсора в индекс байта
+int HexView::pointToByteOffset(const QPoint& pos) const
+{
+    // Учитываем, что слева есть поле для номера строки => если пользователь кликнул
+    // в области номера строки, x может быть < m_lineNumberWidth.
+    // Сдвигаем координату x (чтобы 0 был там, где начинается Hex).
+    int x = pos.x() - m_lineNumberWidth;
+    if (x < 0) {
+        // Кликнули «в номерах строк» — считаем, что это offset = текущая первая ячейка
+        return 0;
+    }
+
+    // Какая строка по вертикали?
+    int line = pos.y() / m_lineHeight;
+    // Прибавим смещение от scrollbar
+    line += verticalScrollBar()->value();
+
+    if (line < 0) return 0;
+    if (line >= totalLineCount()) return m_data.size();
+
+    // В одной строке у нас BYTES_PER_LINE байт, каждый байт занимает 3 символа ("00 ").
+    int byteInLine = x / (3 * m_charWidth);
+    if (byteInLine < 0) {
+        byteInLine = 0;
+    } else if (byteInLine > BYTES_PER_LINE) {
+        byteInLine = BYTES_PER_LINE;
+    }
+
+    int offset = line * BYTES_PER_LINE + byteInLine;
+    if (offset > m_data.size()) {
+        offset = m_data.size();
+    }
+    return offset;
+}
+
+// Возвращает прямоугольник, в котором рисуется байт `byteIndex`
+QRect HexView::byteRect(int byteIndex, int lineIndex) const
+{
+    // байт в строке
+    int byteInLine = byteIndex % BYTES_PER_LINE;
+
+    // x c учётом отступа (места для номера строки)
+    int x = m_lineNumberWidth + byteInLine * (3 * m_charWidth);
+
+    // y c учётом видимого диапазона
+    int lineOffset = lineIndex - verticalScrollBar()->value();
+    int y = lineOffset * m_lineHeight;
+
+    // Возвращаем прямоугольник шириной на "00 " (3 символа в ширину)
+    return QRect(x, y, 3 * m_charWidth, m_lineHeight);
+}
+
+void HexView::updateScrollBar()
+{
+    int lineCount = totalLineCount();
+    verticalScrollBar()->setRange(0, qMax(0, lineCount - 1));
+    verticalScrollBar()->setPageStep(viewport()->height() / m_lineHeight);
+    verticalScrollBar()->setSingleStep(1);
+}
+
+// Делает так, чтобы start <= end
+void HexView::normalizeSelection(int &start, int &end) const
+{
+    start = m_selectionStart;
+    end   = m_selectionEnd;
+
+    if (start < 0 && end < 0) {
+        return; // нет выделения
+    }
+    if (start < 0) start = end;
+    if (end < 0)   end   = start;
+
+    if (start > end) {
+        qSwap(start, end);
+    }
+
+    if (start < 0) start = 0;
+    if (end < 0)   end   = 0;
+    if (start > m_data.size()) start = m_data.size();
+    if (end   > m_data.size()) end   = m_data.size();
+}
+
+// Отдельный метод для рисования номера строки
+void HexView::drawLineNumber(QPainter &painter, int lineIndex, int yPos, const QFontMetrics &fm)
+{
+    // Ширина поля: m_lineNumberWidth
+    // Высота строки: m_lineHeight
+    QRect lnRect(0, yPos, m_lineNumberWidth, m_lineHeight);
+
+    // Можно отображать в 16-ричном виде или в десятичном
+    // Допустим, в hex: lineIndex * 16 будет совпадать с оффсетом, 
+    // но здесь для наглядности просто номер строки
+    QString lineStr = QString::number(lineIndex);
+
+    painter.setPen(Qt::darkGray);
+    painter.drawText(lnRect, 
+                     Qt::AlignVCenter | Qt::AlignRight, 
+                     lineStr);
+}
+```
+
+### Основные моменты
+
+1. **Ширина поля для номеров**  
+   - В конструкторе задана как `m_lineNumberWidth`. Там же сделан «запас» по количеству цифр. В более продвинутом варианте можно вычислить максимально возможное число строк (зная размер файла) и определить, сколько цифр нужно (например, если максимально 99999 строк, то нужно 5 цифр, и т. д.).  
+
+2. **Метод `drawLineNumber()`**  
+   - Рисует номер строки (либо в десятичном, либо в шестнадцатеричном виде). В примере для простоты — десятичные номера.  
+   - Рисуем с помощью `painter.drawText(...)` с выравниванием по правому краю, чтобы ровно смотрелось.  
+
+3. **Сдвиг координат в `paintEvent`**  
+   - Основная часть Hex-данных рисуется с отступом на `m_lineNumberWidth`.  
+   - При вычислении координат (в `byteRect`) тоже учитываем этот отступ.  
+
+4. **Игнорирование «номера строки» при копировании**  
+   - Метод `pointToByteOffset` сначала вычитает `m_lineNumberWidth` из `pos.x()`. Если клик попадает «влево» от области (где номера), то получаем отрицательное x, а значит считаем, что это offset = 0 (или минимальный). То есть пользователь не будет «захватывать» номера строк.  
+
+5. **Дальнейшие улучшения**  
+   - Можно добавить автопрокрутку при «протягивании» выделения, как обсуждалось ранее.  
+   - Можно отображать номера строк в шестнадцатеричном виде, например: `QString("%1").arg(lineIndex, 4, 16, QLatin1Char('0')).toUpper()` для 4-значного hex.  
+   - Для очень больших файлов имеет смысл динамически пересчитывать `m_lineNumberWidth` в `setData()`, исходя из `totalLineCount()`.  
+
+Таким образом, слева есть **колонка с номерами строк**, а справа — полноценный «ленивый» вывод Hex с возможностью выделения/копирования без захвата номеров.
