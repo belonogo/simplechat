@@ -1,0 +1,212 @@
+Ниже приведён **упрощённый пример** «ленивого» (lazy) отображения байтов в виде Hex без загрузки всего текста в стандартные текстовые виджеты. Вместо этого мы используем наследника от `QAbstractScrollArea`, который:
+
+1. Хранит данные (например, в `QByteArray`).
+2. При отрисовке (`paintEvent`) вычисляет (или берёт из кэша) лишь ту часть Hex-строк, которая нужна для текущего видимого диапазона.
+3. Управляет вертикальной прокруткой через `QAbstractScrollArea::verticalScrollBar()`.
+
+Такой подход позволяет избежать «фризов», которые появляются при вставке миллионов символов в `QTextEdit/QPlainTextEdit`.
+
+> **Важно**: это пример-скелет, в реальном проекте придётся добавить кэширование строк, обработку выделения, поиск, цветовое оформление и пр. Но в нём показан сам принцип — «не держать весь Hex-текст сразу в виджете», а формировать на лету (лениво).
+
+## Заголовочный файл (HexView.h)
+
+```cpp
+#pragma once
+
+#include <QAbstractScrollArea>
+#include <QByteArray>
+#include <QScrollBar>
+#include <QPainter>
+#include <QFontMetrics>
+
+class HexView : public QAbstractScrollArea
+{
+    Q_OBJECT
+public:
+    explicit HexView(QWidget* parent = nullptr);
+    ~HexView() override = default;
+
+    // Задаём (или обновляем) данные
+    void setData(const QByteArray& data);
+
+    // Можно также перегрузить sizeHint(), если нужно
+    QSize sizeHint() const override;
+
+protected:
+    // Основная функция отрисовки
+    void paintEvent(QPaintEvent* event) override;
+
+private:
+    QByteArray m_data;
+
+    // Сколько байт отображать в одной строке (классика — 16)
+    static const int BYTES_PER_LINE = 16;
+
+    // Высота одной «строчки» шрифта (уточняется в конструкторе)
+    int m_lineHeight = 0;
+    // Ширина, необходимая, чтобы уместить одну строку (Hex + пробелы и т.п.)
+    int m_lineWidth = 0;
+
+    // Количество строк, необходимых для отображения всего массива
+    int totalLineCount() const;
+
+    // Формирование Hex-строки для конкретной «линии» (по номеру строки)
+    QString hexStringForLine(int lineIndex) const;
+
+    // Удобный метод, чтобы настроить скроллбар (например, при setData)
+    void updateScrollBar();
+};
+```
+
+## Исходник (HexView.cpp)
+
+```cpp
+#include "HexView.h"
+
+HexView::HexView(QWidget* parent)
+    : QAbstractScrollArea(parent)
+{
+    // Настраиваем моноширинный шрифт (часто удобно для Hex)
+    QFont font("Courier");
+    font.setStyleHint(QFont::TypeWriter);
+    setFont(font);
+
+    // С помощью QFontMetrics узнаем высоту строки и другие размеры
+    QFontMetrics fm(font);
+    m_lineHeight = fm.height();
+
+    // Приблизительно прикидываем ширину строки в символах:
+    //   Для каждой строки 16 байт → на каждый байт приходится 2 hex-символа + 1 пробел
+    //   Итого ~ (3 символа) * 16 = 48, плюс небольшой отступ
+    int charsPerLine = BYTES_PER_LINE * 3;
+    m_lineWidth = fm.horizontalAdvance(QString(charsPerLine, ' '));
+
+    // Чтобы перехватывать события мыши, колёсика и т.п.
+    setMouseTracking(true);
+    // Можно при желании отключить focusPolicy, если не нужно выделение / курсор
+}
+
+void HexView::setData(const QByteArray& data)
+{
+    m_data = data;
+    updateScrollBar();
+    viewport()->update(); // Перерисовать
+}
+
+QSize HexView::sizeHint() const
+{
+    // Примерная «идеальная» начальная ширина ~ m_lineWidth,
+    // а высота — допустим, на 25 строк
+    return QSize(m_lineWidth, m_lineHeight * 25);
+}
+
+void HexView::paintEvent(QPaintEvent* /*event*/)
+{
+    QPainter painter(viewport());
+    painter.setFont(font());
+
+    // Текущая «первая видимая строка» (по verticalScrollBar)
+    int firstVisibleLine = verticalScrollBar()->value();
+    // Сколько строк влезает в видимую область?
+    int linesPerPage = viewport()->height() / m_lineHeight;
+
+    // Рисуем строки построчно
+    for (int line = 0; line < linesPerPage; ++line) {
+        int lineIndex = firstVisibleLine + line;
+        if (lineIndex >= totalLineCount()) {
+            break; // вышли за границы
+        }
+
+        // Генерируем строку для данной «линии»
+        QString hexLine = hexStringForLine(lineIndex);
+
+        // Координаты для отрисовки
+        int y = line * m_lineHeight + m_lineHeight; // +m_lineHeight, чтобы не обрезалось
+
+        painter.drawText(0, y, hexLine);
+    }
+}
+
+int HexView::totalLineCount() const
+{
+    // Сколько всего строк нужно, если в каждой 16 байт
+    if (m_data.isEmpty()) {
+        return 0;
+    }
+    return (m_data.size() + BYTES_PER_LINE - 1) / BYTES_PER_LINE;
+}
+
+QString HexView::hexStringForLine(int lineIndex) const
+{
+    // Берём срез данных [lineIndex*16 : (lineIndex*16 + 16)]
+    int start = lineIndex * BYTES_PER_LINE;
+    // std::min, чтобы не выходить за границы массива
+    int end = qMin(start + BYTES_PER_LINE, m_data.size());
+    QByteArray chunk = m_data.mid(start, end - start);
+
+    // Преобразуем байты в Hex (пример «00 A1 FF ...»)
+    QString hexStr;
+    for (uchar b : chunk) {
+        // каждый байт -> два Hex-символа, добавим пробел
+        hexStr += QString("%1 ").arg((uint)b, 2, 16, QLatin1Char('0')).toUpper();
+    }
+    return hexStr.trimmed(); // убираем последний пробел
+}
+
+void HexView::updateScrollBar()
+{
+    int lineCount = totalLineCount();
+    verticalScrollBar()->setRange(0, qMax(0, lineCount - 1));
+    verticalScrollBar()->setPageStep(
+        viewport()->height() / m_lineHeight
+    );
+    verticalScrollBar()->setSingleStep(1);
+}
+```
+
+### Использование в `main.cpp`
+
+```cpp
+#include <QApplication>
+#include <QMainWindow>
+#include "HexView.h"
+
+int main(int argc, char *argv[])
+{
+    QApplication a(argc, argv);
+
+    // Простой пример
+    QMainWindow window;
+
+    // Создаём виджет
+    HexView* hexView = new HexView(&window);
+    window.setCentralWidget(hexView);
+
+    // Допустим, создадим искусственные данные на 1 МБ
+    QByteArray bigData;
+    bigData.resize(1024 * 1024);
+    for (int i = 0; i < bigData.size(); ++i) {
+        bigData[i] = static_cast<char>(i % 256);
+    }
+
+    // Задаём данные нашему виджету
+    hexView->setData(bigData);
+
+    window.resize(800, 600);
+    window.show();
+    return a.exec();
+}
+```
+
+---
+
+## Как это работает
+
+1. **Количество строк** определяется как \(\lceil \frac{\text{размер данных}}{16} \rceil\).  
+2. При прокрутке (скролле) меняется значение `verticalScrollBar()->value()`.  
+3. В `paintEvent` (отрисовке) мы вычисляем, какая часть строк в данный момент видима, и рисуем только их (цикл от `0` до `linesPerPage`).  
+4. Каждая строка формируется из соответствующих 16 байт `m_data` (или меньше, если это последние байты), конвертированных в Hex.  
+
+Таким образом, **не нужно** генерировать гигантский `QString` на 2 миллиона символов и помещать его в `QTextEdit`. Мы всегда «держим» в памяти исходные байты (1 МБ) и формируем Hex-представление **только для нужного окна**. При скролле строки перерисовываются заново (при желании можно добавить кэш, чтобы не пересчитывать Hex-строчки слишком часто).
+
+Если объём данных ещё больше (например, десятки или сотни мегабайт), часто их не держат целиком в `QByteArray`, а читают «по кускам» из файла (memory mapping или I/O). Но принцип тот же: **ленивая подгрузка** и **отрисовка только видимого**.
