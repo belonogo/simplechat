@@ -1,0 +1,382 @@
+Ниже приведён **расширенный пример** на базе предыдущего «ленивого» `HexView`, который позволяет **выделять** и **копировать** фрагменты в Hex-формате. Для упрощения мы сконцентрируемся только на Hex-части (без ASCII-колонки) и не будем усложнять логику выделения (Shift+клик, двойной клик и т. п.) — только базовое «нажал мышь, потащил, отпустил» для выбора диапазона байт.
+
+Основная идея:
+
+1. **Храним выделение** в виде двух целочисленных offsets внутри `m_data`:  
+   - `m_selectionStart`  
+   - `m_selectionEnd`  
+   Они указывают на индексы в `QByteArray` (сколько байт от начала).  
+
+2. **При нажатии и движении мыши** вычисляем, над каким байтом находится курсор, и соответственно меняем `m_selectionStart` / `m_selectionEnd`.  
+
+3. **При отрисовке** (`paintEvent`) подсвечиваем те байты, которые попадают в диапазон выделения.  
+
+4. **Копирование**: по сигналу (например, Ctrl+C или отдельная кнопка) берём байты из `m_data.mid(...)` по выбранному диапазону, конвертируем в Hex и отправляем в буфер обмена.
+
+Это, конечно, не «полный» редактор (нет обработки клавиш-стрелок, не подсвечивается ASCII-колонка и т. д.), но демонстрирует базовый механизм выбора и копирования.
+
+---
+
+## Заголовочный файл (HexView.h)
+
+```cpp
+#pragma once
+
+#include <QAbstractScrollArea>
+#include <QByteArray>
+#include <QScrollBar>
+#include <QPainter>
+#include <QFontMetrics>
+#include <QMouseEvent>
+#include <QClipboard>
+#include <QGuiApplication>
+#include <QShortcut>
+
+class HexView : public QAbstractScrollArea
+{
+    Q_OBJECT
+public:
+    explicit HexView(QWidget* parent = nullptr);
+    ~HexView() override = default;
+
+    // Задаём (или обновляем) данные
+    void setData(const QByteArray& data);
+
+    // Возвращаем выбранный диапазон в виде Hex-строки (если надо извне)
+    QString selectedHex() const;
+
+    // Публичный метод копирования (можно вызывать из контекстного меню или горячей клавиши)
+public slots:
+    void copySelection();
+
+    // Можно перегрузить sizeHint(), если нужно
+    QSize sizeHint() const override;
+
+protected:
+    // Основная функция отрисовки
+    void paintEvent(QPaintEvent* event) override;
+
+    // События мыши — для выделения
+    void mousePressEvent(QMouseEvent* event) override;
+    void mouseMoveEvent(QMouseEvent* event) override;
+    void mouseReleaseEvent(QMouseEvent* event) override;
+
+private:
+    QByteArray m_data;
+
+    // Сколько байт отображать в одной строке
+    static const int BYTES_PER_LINE = 16;
+
+    // Геометрия шрифта и строк
+    int m_lineHeight = 0;
+    int m_charWidth  = 0; // ширина одного символа
+    int m_lineWidth  = 0; // «общая» ширина строки в пикселях
+
+    // Параметры выделения
+    bool m_selecting = false;      // идёт ли «протягивание» мышью
+    int  m_selectionStart = -1;    // offset в m_data
+    int  m_selectionEnd   = -1;    // offset в m_data
+
+    // Подсчёт общего количества «строк»
+    int totalLineCount() const;
+
+    // Удобные методы
+    int pointToByteOffset(const QPoint& pos) const;     // переводим координаты клика в offset
+    QRect byteRect(int byteIndex, int lineIndex) const; // прямоугольник под i-й байт на строке
+    QString byteToHex(unsigned char c) const;           // один байт -> две hex-цифры
+
+    // Обновляем скроллбар (range/pageStep)
+    void updateScrollBar();
+
+    // Вспомогательный метод — привести selectionStart/End к возрастанию
+    void normalizeSelection(int &start, int &end) const;
+};
+```
+
+---
+
+## Исходник (HexView.cpp)
+
+```cpp
+#include "HexView.h"
+
+HexView::HexView(QWidget* parent)
+    : QAbstractScrollArea(parent)
+{
+    // Настраиваем моноширинный шрифт (часто удобно для Hex)
+    QFont font("Courier");
+    font.setStyleHint(QFont::TypeWriter);
+    setFont(font);
+
+    QFontMetrics fm(font);
+    m_lineHeight = fm.height();
+    // Для удобства возьмём среднюю ширину символа (или horizontalAdvance("0"))
+    m_charWidth  = fm.averageCharWidth();
+
+    // Приблизительно прикидываем, сколько нужно символов на одну строку.
+    // Для 16 байт: "00 " = 3 символа на 1 байт → итого 16*3 = 48 символов (примерно)
+    int charsPerLine = BYTES_PER_LINE * 3;
+    m_lineWidth = charsPerLine * m_charWidth;
+
+    setMouseTracking(true);
+
+    // Заводим шорткат для копирования (Ctrl+C)
+    // Можно вместо этого делать контекстное меню, но для примера так:
+    auto copyShortcut = new QShortcut(QKeySequence::Copy, this);
+    connect(copyShortcut, &QShortcut::activated, this, &HexView::copySelection);
+}
+
+void HexView::setData(const QByteArray& data)
+{
+    m_data = data;
+    m_selectionStart = -1;
+    m_selectionEnd   = -1;
+    updateScrollBar();
+    viewport()->update();
+}
+
+QSize HexView::sizeHint() const
+{
+    // Примерная «идеальная» начальная ширина
+    // а высота, скажем, на 25 строк
+    return QSize(m_lineWidth, m_lineHeight * 25);
+}
+
+// Основная функция отрисовки
+void HexView::paintEvent(QPaintEvent* /*event*/)
+{
+    QPainter painter(viewport());
+    painter.setFont(font());
+
+    // Первая видимая строка (по verticalScrollBar)
+    int firstVisibleLine = verticalScrollBar()->value();
+    // Сколько строк умещается?
+    int linesPerPage = viewport()->height() / m_lineHeight;
+
+    // «Нормализованные» границы выделения (start <= end)
+    int selStart, selEnd;
+    normalizeSelection(selStart, selEnd);
+
+    // Рисуем построчно
+    for (int line = 0; line < linesPerPage; ++line) {
+        int lineIndex = firstVisibleLine + line;
+        if (lineIndex >= totalLineCount()) {
+            break; // вышли за границы
+        }
+
+        // Начало и конец байтов на этой строке
+        int byteStart = lineIndex * BYTES_PER_LINE;
+        int byteEnd   = qMin(byteStart + BYTES_PER_LINE, m_data.size());
+
+        // Координата Y для отрисовки
+        int y = line * m_lineHeight + m_lineHeight/2 + 1; 
+        // Немного сдвигаем по вертикали, чтобы текст не обрезался
+
+        int x = 0; // начало рисования по X
+        // Теперь рисуем байт за байтом
+        for (int b = byteStart; b < byteEnd; ++b) {
+            // Проверим, входит ли байт в выделение
+            bool inSelection = (selStart >= 0 && selEnd >= 0 && b >= selStart && b < selEnd);
+
+            // Узнаём прямоугольник, в котором будет этот байт
+            QRect r = byteRect(b, lineIndex);
+            // Если байт в выделении — зальём фон
+            if (inSelection) {
+                painter.fillRect(r, QBrush(QColor("#3399FF"))); // голубая подсветка
+                painter.setPen(Qt::white); // текст белым поверх подсветки
+            } else {
+                painter.setPen(Qt::black);
+            }
+
+            // Собственно, рисуем две hex-цифры + пробел
+            QString hexPart = byteToHex(static_cast<unsigned char>(m_data[b])) + " ";
+            painter.drawText(r.topLeft() + QPoint(0, fm().ascent()), hexPart);
+
+            x += (3 * m_charWidth); // "00 " → 3 символа
+        }
+    }
+}
+
+void HexView::mousePressEvent(QMouseEvent* event)
+{
+    if (event->button() == Qt::LeftButton) {
+        // Начинаем выделение
+        m_selecting = true;
+        int offset = pointToByteOffset(event->pos());
+        m_selectionStart = offset;
+        m_selectionEnd   = offset; // на момент клика
+        viewport()->update();
+    }
+    QAbstractScrollArea::mousePressEvent(event);
+}
+
+void HexView::mouseMoveEvent(QMouseEvent* event)
+{
+    if (m_selecting) {
+        // Продолжаем изменять выделение
+        int offset = pointToByteOffset(event->pos());
+        m_selectionEnd = offset;
+        viewport()->update();
+    }
+    QAbstractScrollArea::mouseMoveEvent(event);
+}
+
+void HexView::mouseReleaseEvent(QMouseEvent* event)
+{
+    if (event->button() == Qt::LeftButton) {
+        m_selecting = false;
+        // «Замораживаем» конечный offset
+        int offset = pointToByteOffset(event->pos());
+        m_selectionEnd = offset;
+        viewport()->update();
+    }
+    QAbstractScrollArea::mouseReleaseEvent(event);
+}
+
+// Возвращает выбранный диапазон данных в виде Hex-строки
+QString HexView::selectedHex() const
+{
+    // Нормализуем
+    int selStart, selEnd;
+    normalizeSelection(selStart, selEnd);
+    if (selStart < 0 || selEnd < 0 || selStart >= selEnd) {
+        return QString();
+    }
+
+    // Берём нужный кусок
+    QByteArray chunk = m_data.mid(selStart, selEnd - selStart);
+    // Конвертируем в Hex — с пробелами или без, на вкус
+    QString hexResult;
+    for (unsigned char c : chunk) {
+        hexResult += byteToHex(c) + ' ';
+    }
+    return hexResult.trimmed();
+}
+
+// Слот: копирование выделенной области в буфер обмена
+void HexView::copySelection()
+{
+    QString hexStr = selectedHex();
+    if (!hexStr.isEmpty()) {
+        QClipboard* clipboard = QGuiApplication::clipboard();
+        clipboard->setText(hexStr);
+    }
+}
+
+// Подсчёт общего количества строк
+int HexView::totalLineCount() const
+{
+    if (m_data.isEmpty()) {
+        return 0;
+    }
+    return (m_data.size() + BYTES_PER_LINE - 1) / BYTES_PER_LINE;
+}
+
+// Перевод координат мыши в номер байта (offset в m_data)
+int HexView::pointToByteOffset(const QPoint& pos) const
+{
+    // Какая строка по вертикали?
+    int line = pos.y() / m_lineHeight;
+    // Какая это строка относительно всего файла?
+    // (прибавляем вертикальный скролл)
+    line += verticalScrollBar()->value();
+
+    if (line < 0) {
+        return 0;
+    }
+    if (line >= totalLineCount()) {
+        return m_data.size();
+    }
+
+    // Внутри этой строки — какой байт по горизонтали?
+    // ширина на 1 байт = 3 символа: "00 " (два hex-символа + пробел)
+    // => 3 * m_charWidth
+    int byteInLine = pos.x() / (3 * m_charWidth);
+    if (byteInLine < 0) {
+        byteInLine = 0;
+    }
+    if (byteInLine > BYTES_PER_LINE) {
+        byteInLine = BYTES_PER_LINE;
+    }
+
+    int byteOffset = line * BYTES_PER_LINE + byteInLine;
+    if (byteOffset > m_data.size()) {
+        byteOffset = m_data.size();
+    }
+    return byteOffset;
+}
+
+// Координаты прямоугольника, в котором будет байт b (строка lineIndex)
+QRect HexView::byteRect(int byteIndex, int lineIndex) const
+{
+    // Какой байт в строке?
+    int byteInLine = byteIndex % BYTES_PER_LINE;
+
+    // x-координата
+    int x = byteInLine * 3 * m_charWidth;
+    // y-координата
+    int lineOffset = lineIndex - verticalScrollBar()->value();
+    int y = lineOffset * m_lineHeight;
+
+    return QRect(x, y, 3*m_charWidth, m_lineHeight);
+}
+
+// Преобразовать байт в две hex-цифры (без пробела)
+QString HexView::byteToHex(unsigned char c) const
+{
+    return QString("%1").arg(c, 2, 16, QLatin1Char('0')).toUpper();
+}
+
+void HexView::updateScrollBar()
+{
+    int lineCount = totalLineCount();
+    verticalScrollBar()->setRange(0, qMax(0, lineCount - 1));
+    verticalScrollBar()->setPageStep(viewport()->height() / m_lineHeight);
+    verticalScrollBar()->setSingleStep(1);
+}
+
+void HexView::normalizeSelection(int &start, int &end) const
+{
+    start = m_selectionStart;
+    end   = m_selectionEnd;
+
+    if (start < 0 && end < 0) {
+        return; // нет выделения
+    }
+    if (start < 0) start = end;
+    if (end < 0)   end   = start;
+
+    if (start > end) {
+        qSwap(start, end);
+    }
+
+    // Границы массива
+    if (start < 0) start = 0;
+    if (end < 0)   end   = 0;
+    if (start > m_data.size()) start = m_data.size();
+    if (end   > m_data.size())   end = m_data.size();
+}
+```
+
+---
+
+## Пояснения
+
+1. **Выделение**:
+   - При нажатии левой кнопки мыши (`mousePressEvent`) сохраняем в `m_selectionStart` и `m_selectionEnd` одинаковое значение (определяемое `pointToByteOffset`).  
+   - При перемещении (`mouseMoveEvent`) обновляем `m_selectionEnd`.  
+   - При отпускании (`mouseReleaseEvent`) «фиксируем» конечную точку.  
+   - В `paintEvent` мы проверяем, какие байты попадают в диапазон \([m_selectionStart; m_selectionEnd)\) и подсвечиваем их.  
+
+2. **Копирование**:
+   - Реализовано через слот `copySelection()`. Он берёт выбранный диапазон байт и преобразует в Hex-строку.  
+   - Привязываем его к шорткату `Ctrl+C` (`QShortcut(QKeySequence::Copy, this)`). В реальном приложении это можно сделать и через контекстное меню или через кнопку.  
+
+3. **Границы**:
+   - Если пользователь утащит мышь «выше» или «ниже» видимой области, можно доработать автоскролл, но в данном коротком примере этого нет.  
+   - При желании можно вывести ещё и ASCII-представление рядом (вторая колонка), но тогда логика «попадания мыши в байт» усложнится.  
+
+4. **Оптимизация**:
+   - В примере каждый байт при отрисовке формируется отдельно. Для 1–2 мегабайт может быть достаточно быстро, но если данных ещё больше, стоит подумать о дополнительных оптимизациях (кэширование готовых строк и т. п.).  
+
+Таким образом, мы получаем виджет, в котором можно **прокручивать** большие данные, **выделять** фрагмент мышью и **копировать** его в виде Hex — без необходимости «заливать» миллионы символов в стандартный `QTextEdit`.
